@@ -1,0 +1,15 @@
+pymupdf>=1.24.0
+Pillow>=10.0.0
+bitsandbytes
+transformers
+torchvision
+accelerate
+openai>=1.14.0
+python-dotenv>=1.0.0
+torchaudio>=2.0.0
+pydub
+soundfile
+kokoro>=0.9.4
+mutagen
+ebooklib
+langgraph 

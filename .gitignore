@@ -1,0 +1,43 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.dylib
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+build/
+dist/
+
+# Environment and secrets
+.env
+
+# Generated data
+*.mp3
+*.wav
+*.jsonl
+*.pdf
+*.epub
+*.json
+*.deb
+*.xml
+
+# Local outputs
+audio/
+images/
+data/
+*.log
+
+#model
+*.bin
+*.onnx
