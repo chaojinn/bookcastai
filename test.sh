@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-echo "testing my_chinese_marriage"
-python ./test.py --cmd="python ./parser/parse_epub.py ./test/base_line/my_chinese_marriage/book.epub -o=./test/base_line/my_chinese_marriage.json --number-title-to-english --first-chapter-title=\"CHAPTER ONE IN AMERICA\" --last-chapter-title=\"CHAPTER FOUR THE ETERNAL HILLS\" --ignore-class=\"bold2\" " --result="./test/base_line/my_chinese_marriage.json" --baseline="./test/base_line/my_chinese_marriage/book.json"
-echo "testing the_stars_like_dust"
-python ./test.py --cmd="python ./parser/parse_epub.py ./test/base_line/the_stars_like_dust/book.epub -o=./test/base_line/the_stars_like_dust.json --number-title-to-english" --result="./test/base_line/the_stars_like_dust.json" --baseline="./test/base_line/the_stars_like_dust/book.json"
-echo "testing the_currents_of_space"
-python ./test.py --cmd="python ./parser/parse_epub.py ./test/base_line/the_currents_of_space/book.epub -o=./test/base_line/the_currents_of_space.json --number-title-to-english --first-chapter-title=\"PROLOG A YEAR BEFORE\" --last-chapter-title=\"EPILOG A YEAR AFTER\"" --result="./test/base_line/the_currents_of_space.json" --baseline="./test/base_line/the_currents_of_space/book.json"
-echo "testing pebble_in_the_sky"
-#python ./test.py --cmd="python ./parser/parse_epub.py ./test/base_line/the_currents_of_space/book.epub -o=./test/base_line/the_currents_of_space.json --number-title-to-english --first-chapter-title=\"PROLOG A YEAR BEFORE\" --last-chapter-title=\"EPILOG A YEAR AFTER\"" --result="./test/base_line/the_currents_of_space.json" --baseline="./test/base_line/the_currents_of_space/book.json"
