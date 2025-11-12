@@ -66,6 +66,7 @@ class EPUBAgentState(TypedDict, total=False):
     end_chapter_number: int
     selected_chapter_numbers: List[int]
     ignore_classes: List[str]
+    ai_extract_text: bool
 
 
 def _split_text_into_chunks(text: str, chunk_size: int) -> List[str]:
@@ -161,9 +162,13 @@ def _build_graph(
     chunk_size: int,
     ignore_classes: Optional[List[str]] = None,
     preview: bool = False,
+    ai_extract_text: bool = False,
 ) -> StateGraph:
     graph = StateGraph(EPUBAgentState)
-    text_converter = EPUBTextConverter(ignore_classes=ignore_classes or [])
+    text_converter = EPUBTextConverter(
+        ignore_classes=ignore_classes or [],
+        ai_extract_text=ai_extract_text,
+    )
     normalized_chunk_size = max(1, chunk_size)
 
     def fetch_table_of_contents(state: EPUBAgentState) -> EPUBAgentState:
@@ -295,6 +300,10 @@ def _build_graph(
                 updated_chapters.append(chapter)
                 continue
             chunks = _split_text_by_punctuation(content, effective_chunk_size)
+            chunks = text_converter.convert_chunks_for_tts(
+                chapter,
+                chunks,
+            )
             existing_chunks = chapter.get("chunks")
             if isinstance(existing_chunks, list) and existing_chunks == chunks:
                 updated_chapters.append(chapter)
@@ -369,6 +378,7 @@ class EPUBAgent:
         selected_chapters: Optional[Sequence[int]] = None,
         ignore_classes: Optional[List[str]] = None,
         preview: bool = False,
+        ai_extract_text: bool = False,
     ) -> None:
         self._mcp_client = mcp_client or EbooklibEPUBMCPClient()
         self._chunk_size = max(1, chunk_size)
@@ -407,11 +417,13 @@ class EPUBAgent:
                 seen.add(lowered)
         self._ignore_classes = cleaned_ignore
         self._preview = bool(preview)
+        self._ai_extract_text = bool(ai_extract_text)
         self._graph = _build_graph(
             self._mcp_client,
             chunk_size=self._chunk_size,
             ignore_classes=self._ignore_classes,
             preview=self._preview,
+            ai_extract_text=self._ai_extract_text,
         )
 
     def run(
@@ -433,6 +445,8 @@ class EPUBAgent:
             initial_state["selected_chapter_numbers"] = list(self._selected_chapters)
         if self._ignore_classes:
             initial_state["ignore_classes"] = list(self._ignore_classes)
+        if self._ai_extract_text:
+            initial_state["ai_extract_text"] = True
 
         final_state = self._graph.invoke(initial_state)
         result = final_state.get("result", {})
@@ -459,6 +473,7 @@ def run_epub_agent(
     selected_chapters: Optional[Sequence[int]] = None,
     ignore_classes: Optional[List[str]] = None,
     preview: bool = False,
+    ai_extract_text: bool = False,
 ) -> Dict[str, Any]:
     """
     Convenience wrapper that instantiates and executes the EPUB agent.
@@ -483,6 +498,8 @@ def run_epub_agent(
         Optional list of CSS class names whose elements should be ignored during text extraction.
     preview:
         When True, skip the conversion step for faster previews (default: False).
+    ai_extract_text:
+        When True, send each generated chunk through the AI cleanup prompt for TTS readiness.
     """
     agent = EPUBAgent(
         mcp_client=mcp_client,
@@ -492,6 +509,7 @@ def run_epub_agent(
         selected_chapters=selected_chapters,
         ignore_classes=ignore_classes,
         preview=preview,
+        ai_extract_text=ai_extract_text,
     )
     return agent.run(epub_path=epub_path, output_path=output_path)
 
@@ -603,6 +621,14 @@ def _create_arg_parser() -> "argparse.ArgumentParser":  # pragma: no cover - CLI
             "Repeat the flag to provide additional entries."
         ),
     )
+    parser.add_argument(
+        "--ai-extract-text",
+        action="store_true",
+        help=(
+            "Use the AI OCR-cleanup prompt to normalize each chunk for TTS output "
+            "(slower, requires OpenRouter credentials)."
+        ),
+    )
     return parser
 
 
@@ -627,6 +653,7 @@ def _cli() -> int:  # pragma: no cover - CLI helper
         selected_chapters=chapter_numbers,
         ignore_classes=_parse_ignore_classes(args.ignore_class),
         preview=args.preview,
+        ai_extract_text=args.ai_extract_text,
     )
     if not args.output:
         print(json.dumps(result, ensure_ascii=False, indent=2))

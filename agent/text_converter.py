@@ -18,7 +18,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|\n+")
-
+_MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"  # or openai/gpt-5
+_AI_CHUNK_PROMPT_TEMPLATE = (
+    "convert the following text from ocr so it can be feed to a tts software. using rules \n"
+    "1) add extra space if ocr missed space result in 2 words combined without space. \n"
+    "2) remove unneeded spaces from ocr. \n"
+    "3) remove parts might be introduced to text by ocr process which make sentence break. \n"
+    "4) make sure the text have proper uppercase / lowercase.\n"
+    "5)make minimal changes to the text. \n"
+    "6)return changed text in whole without adding anything at the front or end.\n"
+    "here is the text: {chunk_text}"
+)
 
 def _normalize_whitespace(value: str) -> str:
     """Collapse consecutive whitespace and trim the resulting string."""
@@ -102,12 +112,19 @@ class _HTMLStripper(HTMLParser):
 class EPUBTextConverter:
     """Performs text cleanup for EPUB metadata and chapter content."""
 
-    def __init__(self, *, ignore_classes: Optional[Sequence[str]] = None) -> None:
+    def __init__(
+        self,
+        *,
+        ignore_classes: Optional[Sequence[str]] = None,
+        ai_extract_text: bool = False,
+    ) -> None:
         self._ignored_classes = [
             cls.strip()
             for cls in (ignore_classes or [])
             if isinstance(cls, str) and cls.strip()
         ]
+        self._ai_extract_text = bool(ai_extract_text)
+        self._openrouter_client: Optional[OpenAI] = None
 
     def convert(self, state: "EPUBAgentState") -> "EPUBAgentState":
         updated_state: Dict[str, Any] = dict(state)
@@ -227,6 +244,91 @@ class EPUBTextConverter:
             else:
                 converted.append(chapter)
         return converted if modified else None
+
+    def convert_chunks_for_tts(
+        self,
+        chapter: Optional[Dict[str, Any]],
+        chunks: Sequence[str],
+    ) -> List[str]:
+        """Optionally run AI cleanup on each chunk for downstream TTS."""
+        if not chunks:
+            return []
+        chunk_list = [chunk for chunk in chunks]
+        if not self._ai_extract_text:
+            return chunk_list
+
+        try:
+            client = self._get_openrouter_client()
+        except RuntimeError as exc:
+            logger.error("AI chunk extraction unavailable: %s", exc)
+            return chunk_list
+
+        chapter_title = ""
+        chapter_number = None
+        if isinstance(chapter, dict):
+            chapter_title = chapter.get("chapter_title", "")
+            chapter_number = chapter.get("chapter_number")
+        label = chapter_title or "Chapter"
+        if isinstance(chapter_number, int):
+            label = f"Chapter {chapter_number}: {label}" if chapter_title else f"Chapter {chapter_number}"
+
+        cleaned_chunks: List[str] = []
+        total = len(chunk_list)
+        for index, chunk in enumerate(chunk_list, start=1):
+            logger.info("AI extracting chunk %d/%d for %s", index, total, label)
+            if not isinstance(chunk, str) or not chunk.strip():
+                cleaned_chunks.append(chunk)
+                continue
+            try:
+                cleaned_chunk = self._clean_chunk_with_ai(client, chunk)
+            except Exception as exc:  # pragma: no cover - network failure path
+                logger.error(
+                    "AI extraction failed for chunk %d/%d (%s): %s",
+                    index,
+                    total,
+                    label,
+                    exc,
+                )
+                cleaned_chunk = chunk
+            cleaned_chunks.append(cleaned_chunk)
+        return cleaned_chunks
+
+    def _get_openrouter_client(self) -> OpenAI:
+        if self._openrouter_client is not None:
+            return self._openrouter_client
+        load_dotenv()
+        api_key = os.getenv("OPENROUTE_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENROUTE_API_KEY is not set. Unable to run AI chunk extraction.")
+        self._openrouter_client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        return self._openrouter_client
+
+    def _clean_chunk_with_ai(self, client: OpenAI, chunk_text: str) -> str:
+        prompt = _AI_CHUNK_PROMPT_TEMPLATE.format(chunk_text=chunk_text)
+        response = client.chat.completions.create(
+            model=_MODEL_NAME,
+            temperature=0,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You clean OCR text so it can be consumed by TTS engines. Respond with the fixed text only."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+        )
+        content = response.choices[0].message.content if response.choices else None
+        if not content:
+            logger.error("AI extraction returned empty response. Falling back to original chunk.")
+            return chunk_text
+        return content.strip()
 
     def _convert_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any] | None:
         if not metadata:
@@ -391,7 +493,7 @@ def convert_titles_with_openroute(titles: Sequence[str]) -> str:
     }
 
     response = client.chat.completions.create(
-        model="openai/gpt-5",
+        model=_MODEL_NAME,
         temperature=0,
         messages=[
             {
@@ -489,15 +591,15 @@ def normalize_first_sentences_with_openroute(
 
     instructions = (
         "Extract chapter number and chapter title from 'chapter_title' field. Use them to normalize the first sentence of each chapter. "
-        "If 'chapter_title' contains chapter number, first stence should be Chapter {chapter number}: {chapter title}. content"
-        "If not, it should be {chapter title}. content"
+        "If 'chapter_title' contains chapter number, first stence should be {chapter title}. content"
+        "If not, it should be Chapter {chapter number}: {chapter title}. content"
         'Any dupplication of chapter title or number at the beginning of the sentence content should be removed.'
         "The rest should remain unchanged."
         "Return the final list of sentences as a JSON array of strings in the same order as provided."
     )
 
     response = client.chat.completions.create(
-        model="openai/gpt-5",
+        model=_MODEL_NAME,
         temperature=0,
         messages=[
             {
