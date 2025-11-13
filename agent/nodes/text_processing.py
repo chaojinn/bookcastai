@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-import html
+import hashlib
 import json
 import logging
 import os
 import re
-from html.parser import HTMLParser
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Set
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
-if TYPE_CHECKING:
-    from .epub_agent import EPUBAgentState
-
+if TYPE_CHECKING:  # pragma: no cover - typing aid
+    from ..epub_agent import EPUBAgentState
 
 logger = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|\n+")
-_MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"  # or openai/gpt-5
+_MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
+_CACHE_PATH = Path("data") / "openroute_cache.json"
 _AI_CHUNK_PROMPT_TEMPLATE = (
     "convert the following text from ocr so it can be feed to a tts software. using rules \n"
     "1) add extra space if ocr missed space result in 2 words combined without space. \n"
@@ -30,13 +30,12 @@ _AI_CHUNK_PROMPT_TEMPLATE = (
     "here is the text: {chunk_text}"
 )
 
+
 def _normalize_whitespace(value: str) -> str:
-    """Collapse consecutive whitespace and trim the resulting string."""
     return re.sub(r"\s+", " ", value).strip()
 
 
 def _extract_first_sentence(text: str) -> tuple[str, int]:
-    """Return the first sentence(s) ensuring at least 50 chars and count of sentences."""
     if not isinstance(text, str):
         return "", 0
     cleaned = text.strip()
@@ -59,88 +58,30 @@ def _extract_first_sentence(text: str) -> tuple[str, int]:
     combined = " ".join(collected)
     return _normalize_whitespace(combined), sentence_count
 
-class _HTMLStripper(HTMLParser):
-    """Utility parser that collects textual content."""
 
-    def __init__(self, ignored_classes: Optional[Sequence[str]] = None) -> None:
-        super().__init__()
-        self._fragments: List[str] = []
-        self._ignored_classes: Set[str] = {
-            cls.strip().lower()
-            for cls in (ignored_classes or [])
-            if isinstance(cls, str) and cls.strip()
-        }
-        self._ignore_stack: List[bool] = []
-
-    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
-        self._push_ignore_state(attrs)
-
-    def handle_startendtag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
-        self._push_ignore_state(attrs)
-        self.handle_endtag(tag)
-
-    def handle_endtag(self, tag: str) -> None:
-        if self._ignore_stack:
-            self._ignore_stack.pop()
-
-    def handle_data(self, data: str) -> None:
-        if not data:
-            return
-        if self._ignore_stack and self._ignore_stack[-1]:
-            return
-        self._fragments.append(data)
-
-    def get_data(self) -> str:
-        return "".join(self._fragments)
-
-    def _push_ignore_state(self, attrs: List[tuple[str, Optional[str]]]) -> None:
-        if self._ignore_stack and self._ignore_stack[-1]:
-            self._ignore_stack.append(True)
-            return
-        should_ignore = False
-        if self._ignored_classes:
-            for name, value in attrs:
-                if not name or name.lower() != "class" or not value:
-                    continue
-                classes = {segment.strip().lower() for segment in value.split() if segment.strip()}
-                if classes & self._ignored_classes:
-                    should_ignore = True
-                    break
-        self._ignore_stack.append(should_ignore)
-
-
-class EPUBTextConverter:
-    """Performs text cleanup for EPUB metadata and chapter content."""
-
-    def __init__(
-        self,
-        *,
-        ignore_classes: Optional[Sequence[str]] = None,
-        ai_extract_text: bool = False,
-    ) -> None:
-        self._ignored_classes = [
-            cls.strip()
-            for cls in (ignore_classes or [])
-            if isinstance(cls, str) and cls.strip()
-        ]
+class EPUBTextProcessor:
+    def __init__(self, *, ai_extract_text: bool = False) -> None:
         self._ai_extract_text = bool(ai_extract_text)
         self._openrouter_client: Optional[OpenAI] = None
 
-    def convert(self, state: "EPUBAgentState") -> "EPUBAgentState":
-        updated_state: Dict[str, Any] = dict(state)
-        errors: List[str] = list(state.get("errors", []))
-
+    def normalize_titles(
+        self,
+        state: "EPUBAgentState",
+        errors: List[str],
+    ) -> Dict[str, Any]:
         chapters = state.get("chapters")
         chapter_list = chapters if isinstance(chapters, list) else []
-        filtered_chapters = self.filter_chapters(chapter_list, state)
+        filtered = self.filter_chapters(chapter_list)
+        normalized = self._normalize_titles_with_openroute(filtered, errors)
+        return {"chapters": normalized}
 
-        chapter_updates = self._convert_chapters(filtered_chapters)
-        converted_chapters = chapter_updates if chapter_updates is not None else filtered_chapters
-        normalized_chapters = self._normalize_titles_with_openroute(converted_chapters, errors)
-        updated_state["chapters"] = normalized_chapters
-
+    def normalize_first_sentences(
+        self,
+        chapters: Sequence[Dict[str, Any]],
+        errors: List[str],
+    ) -> Dict[str, Any]:
         chapter_payload: List[Dict[str, Any]] = []
-        for index, chapter in enumerate(normalized_chapters, start=1):
+        for chapter in chapters:
             if not isinstance(chapter, dict):
                 chapter_payload.append(
                     {
@@ -165,7 +106,7 @@ class EPUBTextConverter:
             intro_json = normalize_first_sentences_with_openroute(chapter_payload)
             normalized_intros = json.loads(intro_json)
             if isinstance(normalized_intros, list):
-                for chapter, intro, payload in zip(normalized_chapters, normalized_intros, chapter_payload):
+                for chapter, intro, payload in zip(chapters, normalized_intros, chapter_payload):
                     if not isinstance(chapter, dict) or not isinstance(intro, str):
                         continue
                     sentence_count = payload.get("sentence_count") if isinstance(payload, dict) else 0
@@ -209,48 +150,29 @@ class EPUBTextConverter:
             logger.error("OpenRoute first sentence normalization failed: %s", exc)
             errors.append(f"OpenRoute first sentence normalization failed: {exc}")
 
-        metadata = state.get("metadata") or {}
-        metadata_update = self._convert_metadata(metadata)
-        if metadata_update is not None:
-            updated_state["metadata"] = metadata_update
+        return {"chapters": chapters}
 
-        if errors:
-            updated_state["errors"] = errors
-
-        return updated_state  # type: ignore[return-value]
-
-    def _convert_chapters(
+    def filter_chapters(
         self,
-        chapters: Iterable[Dict[str, Any]],
-    ) -> List[Dict[str, Any]] | None:
-        modified = False
-        converted: List[Dict[str, Any]] = []
+        chapters: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        filtered: List[Dict[str, Any]] = []
         for chapter in chapters:
             if not isinstance(chapter, dict):
-                converted.append(chapter)
                 continue
-            content = chapter.get("content_text")
-            chapter_copy: Dict[str, Any] | None = None
-            chapter_modified = False
-            if isinstance(content, str):
-                cleaned = self._strip_html(content)
-                if cleaned != content:
-                    chapter_copy = dict(chapter)
-                    chapter_copy["content_text"] = cleaned
-                    chapter_modified = True
-            if chapter_modified and chapter_copy is not None:
-                converted.append(chapter_copy)
-                modified = True
-            else:
-                converted.append(chapter)
-        return converted if modified else None
+            chapter_number = chapter.get("chapter_number")
+            if not isinstance(chapter_number, int):
+                continue
+            chapter_copy: Dict[str, Any] = dict(chapter)
+            chapter_copy["chapter_number"] = len(filtered) + 1
+            filtered.append(chapter_copy)
+        return filtered
 
     def convert_chunks_for_tts(
         self,
         chapter: Optional[Dict[str, Any]],
         chunks: Sequence[str],
     ) -> List[str]:
-        """Optionally run AI cleanup on each chunk for downstream TTS."""
         if not chunks:
             return []
         chunk_list = [chunk for chunk in chunks]
@@ -330,67 +252,6 @@ class EPUBTextConverter:
             return chunk_text
         return content.strip()
 
-    def _convert_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any] | None:
-        if not metadata:
-            return None
-        description = metadata.get("description")
-        if not isinstance(description, str):
-            return None
-        cleaned = self._strip_html(description)
-        if cleaned == description:
-            return None
-        updated = dict(metadata)
-        updated["description"] = cleaned
-        return updated
-
-    def _strip_html(self, value: str) -> str:
-        stripper = _HTMLStripper(self._ignored_classes)
-        stripper.feed(value)
-        stripper.close()
-        text = stripper.get_data()
-        text = html.unescape(text)
-        return _normalize_whitespace(text)
-
-    def filter_chapters(
-        self,
-        chapters: Sequence[Dict[str, Any]],
-        state: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        start_value = state.get("start_chapter_number")
-        start_chapter = max(1, int(start_value)) if isinstance(start_value, int) else 1
-
-        end_value = state.get("end_chapter_number")
-        end_chapter = (
-            max(start_chapter, int(end_value))
-            if isinstance(end_value, int) and int(end_value) >= start_chapter
-            else None
-        )
-
-        selected_numbers = state.get("selected_chapter_numbers")
-        selection: Set[int] = set()
-        if isinstance(selected_numbers, list):
-            for value in selected_numbers:
-                if isinstance(value, int) and value > 0:
-                    selection.add(value)
-
-        filtered: List[Dict[str, Any]] = []
-        for chapter in chapters:
-            if not isinstance(chapter, dict):
-                continue
-            chapter_number = chapter.get("chapter_number")
-            if not isinstance(chapter_number, int):
-                continue
-            if chapter_number < start_chapter:
-                continue
-            if end_chapter is not None and chapter_number > end_chapter:
-                continue
-            if selection and chapter_number not in selection:
-                continue
-            chapter_copy: Dict[str, Any] = dict(chapter)
-            chapter_copy["chapter_number"] = len(filtered) + 1
-            filtered.append(chapter_copy)
-        return filtered
-
     def _normalize_titles_with_openroute(
         self,
         chapters: List[Dict[str, Any]],
@@ -428,8 +289,7 @@ class EPUBTextConverter:
         )
         if normalized_start_count < len(normalized_titles) * 0.5:
             logger.error(
-                "OpenRoute normalization produced too few chapter-prefixed titles "
-                "(%d of %d).",
+                "OpenRoute normalization produced too few chapter-prefixed titles (%d of %d).",
                 normalized_start_count,
                 len(normalized_titles),
             )
@@ -450,34 +310,8 @@ class EPUBTextConverter:
 
 
 def convert_titles_with_openroute(titles: Sequence[str]) -> str:
-    """
-    Use the OpenRoute API (OpenAI GPT-5) to normalize chapter titles.
-
-    Parameters
-    ----------
-    titles:
-        Original chapter titles in reading order.
-
-    Returns
-    -------
-    str
-        JSON array of normalized titles.
-    """
     if not titles:
         return json.dumps([], ensure_ascii=False)
-
-    load_dotenv()
-    api_key = os.getenv("OPENROUTE_API_KEY")
-    if not api_key:
-        logger.error("OPENROUTE_API_KEY is not set. Unable to normalize chapter titles via OpenRoute.")
-        raise RuntimeError("OPENROUTE_API_KEY is not set in the environment or .env file.")
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-    )
-
-    logger.info("OpenRoute normalization input (%d titles): %s", len(titles), list(titles))
 
     payload = {
         "instructions": (
@@ -492,27 +326,46 @@ def convert_titles_with_openroute(titles: Sequence[str]) -> str:
         "titles": list(titles),
     }
 
-    response = client.chat.completions.create(
-        model=_MODEL_NAME,
-        temperature=0,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You transform chapter titles. Output MUST be a JSON array of strings, nothing else."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False),
-            },
-        ],
-    )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You transform chapter titles. Output MUST be a JSON array of strings, nothing else."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False),
+        },
+    ]
 
-    content = response.choices[0].message.content if response.choices else None
-    if not content:
-        logger.error("OpenRoute API returned empty content for payload: %s", payload)
-        raise RuntimeError("OpenRoute API returned no content for the request.")
+    request_payload = {
+        "model": _MODEL_NAME,
+        "temperature": 0,
+        "messages": messages,
+    }
+
+    content = _get_cached_openroute_response(request_payload)
+    if content is None:
+        load_dotenv()
+        api_key = os.getenv("OPENROUTE_API_KEY")
+        if not api_key:
+            logger.error("OPENROUTE_API_KEY is not set. Unable to normalize chapter titles via OpenRoute.")
+            raise RuntimeError("OPENROUTE_API_KEY is not set in the environment or .env file.")
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        response = client.chat.completions.create(**request_payload)
+        content = response.choices[0].message.content if response.choices else None
+        if not content:
+            logger.error("OpenRoute API returned empty content for payload: %s", payload)
+            raise RuntimeError("OpenRoute API returned no content for the request.")
+        _store_openroute_response(request_payload, content)
+    else:
+        logger.info("OpenRoute title normalization cache hit.")
 
     try:
         normalized_titles = json.loads(content)
@@ -536,36 +389,11 @@ def convert_titles_with_openroute(titles: Sequence[str]) -> str:
 def normalize_first_sentences_with_openroute(
     chapter_requests: Sequence[Dict[str, Any]],
 ) -> str:
-    """
-    Use the OpenRoute API to normalize the first sentence of each chapter.
-
-    Parameters
-    ----------
-    chapter_requests:
-        Iterable containing chapter request dictionaries with `chapter_number`, `chapter_title`,
-        `first_sentence`, and `sentence_count`.
-
-    Returns
-    -------
-    str
-        JSON array of normalized introductory sentences.
-    """
     if not chapter_requests:
         return json.dumps([], ensure_ascii=False)
 
-    load_dotenv()
-    api_key = os.getenv("OPENROUTE_API_KEY")
-    if not api_key:
-        logger.error("OPENROUTE_API_KEY is not set. Unable to normalize first sentences.")
-        raise RuntimeError("OPENROUTE_API_KEY is not set in the environment or .env file.")
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-    )
-
     chapter_payload: List[Dict[str, Any]] = []
-    for index, request in enumerate(chapter_requests, start=1):
+    for request in chapter_requests:
         if not isinstance(request, dict):
             chapter_payload.append(
                 {
@@ -598,33 +426,52 @@ def normalize_first_sentences_with_openroute(
         "Return the final list of sentences as a JSON array of strings in the same order as provided."
     )
 
-    response = client.chat.completions.create(
-        model=_MODEL_NAME,
-        temperature=0,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You normalize chapter openings. Output MUST be a JSON array of strings, nothing else."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "instructions": instructions,
-                        "chapters": chapter_payload,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ],
-    )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You normalize chapter openings. Output MUST be a JSON array of strings, nothing else."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "instructions": instructions,
+                    "chapters": chapter_payload,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
 
-    content = response.choices[0].message.content if response.choices else None
-    if not content:
-        logger.error("OpenRoute API returned empty content for introduction normalization.")
-        raise RuntimeError("OpenRoute API returned no content for the request.")
+    request_payload = {
+        "model": _MODEL_NAME,
+        "temperature": 0,
+        "messages": messages,
+    }
+
+    content = _get_cached_openroute_response(request_payload)
+    if content is None:
+        load_dotenv()
+        api_key = os.getenv("OPENROUTE_API_KEY")
+        if not api_key:
+            logger.error("OPENROUTE_API_KEY is not set. Unable to normalize first sentences.")
+            raise RuntimeError("OPENROUTE_API_KEY is not set in the environment or .env file.")
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        response = client.chat.completions.create(**request_payload)
+        content = response.choices[0].message.content if response.choices else None
+        if not content:
+            logger.error("OpenRoute API returned empty content for introduction normalization.")
+            raise RuntimeError("OpenRoute API returned no content for the request.")
+        _store_openroute_response(request_payload, content)
+    else:
+        logger.info("OpenRoute first-sentence normalization cache hit.")
 
     try:
         normalized_sentences = json.loads(content)
@@ -649,4 +496,44 @@ def normalize_first_sentences_with_openroute(
     return json.dumps(normalized_sentences, ensure_ascii=False)
 
 
-__all__ = ["EPUBTextConverter", "convert_titles_with_openroute", "normalize_first_sentences_with_openroute"]
+def _get_cached_openroute_response(payload: Dict[str, Any]) -> str | None:
+    cache = _load_openroute_cache()
+    key = _openroute_cache_key(payload)
+    entry = cache.get(key)
+    if not isinstance(entry, dict):
+        return None
+    response = entry.get("response")
+    return response if isinstance(response, str) else None
+
+
+def _store_openroute_response(payload: Dict[str, Any], response: str) -> None:
+    cache = _load_openroute_cache()
+    key = _openroute_cache_key(payload)
+    cache[key] = {"request": payload, "response": response}
+    _save_openroute_cache(cache)
+
+
+def _load_openroute_cache() -> Dict[str, Any]:
+    if not _CACHE_PATH.exists():
+        return {}
+    try:
+        with _CACHE_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to read OpenRoute cache: %s", exc)
+        return {}
+
+
+def _save_openroute_cache(cache: Dict[str, Any]) -> None:
+    try:
+        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CACHE_PATH.open("w", encoding="utf-8") as handle:
+            json.dump(cache, handle, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        logger.warning("Unable to write OpenRoute cache: %s", exc)
+
+
+def _openroute_cache_key(payload: Dict[str, Any]) -> str:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
