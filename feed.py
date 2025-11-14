@@ -720,16 +720,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "metadata",
-        type=Path,
-        help="Path to the JSON file produced by parser/parse_epub.py.",
-    )
-    parser.add_argument("output", type=Path, help="Destination path for the generated RSS XML file.")
-    parser.add_argument(
-        "--audio-dir",
-        type=Path,
-        default=Path("."),
-        help="Local directory containing chapter MP3 files (default: current directory).",
+        "book_title",
+        help="Book title used to locate ./data/{book_title}/book.json, book.xml, and audio output.",
     )
     parser.add_argument("--feed-title", help="Custom podcast title. Defaults to the EPUB metadata title.")
     parser.add_argument("--feed-description", help="Custom podcast description.")
@@ -752,10 +744,15 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = parse_args(argv)
 
-    if not args.metadata.is_file():
-        raise FileNotFoundError(f"Metadata JSON not found: {args.metadata}")
-    if not args.audio_dir.is_dir():
-        raise NotADirectoryError(f"Audio directory is not a directory: {args.audio_dir}")
+    base_dir = Path("data") / args.book_title
+    metadata_path = base_dir / "book.json"
+    output_path = base_dir / "book.xml"
+    audio_dir = base_dir / "kokoro"
+
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"Metadata JSON not found: {metadata_path}")
+    if not audio_dir.is_dir():
+        raise NotADirectoryError(f"Audio directory is not a directory: {audio_dir}")
 
     audio_url_prefix = os.getenv(ENV_AUDIO_URL_PREFIX)
     if not audio_url_prefix:
@@ -768,14 +765,14 @@ def main(argv: list[str] | None = None) -> int:
             f"Environment variable {ENV_OLLAMA_API_URL} is required to summarize chapter content."
         )
 
-    with args.metadata.open("r", encoding="utf-8") as handle:
+    with metadata_path.open("r", encoding="utf-8") as handle:
         metadata = json.load(handle)
 
-    metadata.setdefault("audio_dir", str(args.audio_dir))
+    metadata["audio_dir"] = str(audio_dir)
 
     feed = build_feed(
         metadata,
-        args.audio_dir,
+        audio_dir,
         audio_base_url=audio_url_prefix,
         feed_title=args.feed_title,
         feed_description=args.feed_description,
@@ -787,12 +784,12 @@ def main(argv: list[str] | None = None) -> int:
         ollama_api_url=ollama_api_url,
     )
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     _indent(feed.getroot())
-    feed.write(args.output, encoding="utf-8", xml_declaration=True)
-    print(f"Generated RSS feed at {args.output}")
+    feed.write(output_path, encoding="utf-8", xml_declaration=True)
+    print(f"Generated RSS feed at {output_path}")
 
-    upload_feed(metadata, str(args.output))
+    upload_feed(metadata, str(output_path))
 
     return 0
 

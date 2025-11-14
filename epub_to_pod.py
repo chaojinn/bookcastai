@@ -5,7 +5,6 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Iterable
 from tts.kokoro import KokoroTTSProvider
 from tts.openai_provider import OpenAITTSProvider
 from tts.dia_provider import DiaTTSProvider
@@ -61,40 +60,6 @@ def _build_provider(
     }
 
 
-def _parse_chapter_spec(spec: str, *, total: int) -> list[int]:
-    """Interpret chapter selection syntax like '1', '2-4', or '1,3,5-6'."""
-    if not spec:
-        return list(range(1, total + 1))
-
-    selected: set[int] = set()
-    for token in spec.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        if "-" in token:
-            start_text, end_text = token.split("-", 1)
-            try:
-                start = int(start_text)
-                end = int(end_text)
-            except ValueError:
-                raise ValueError(f"Invalid chapter range '{token}'. Use integers like '2-4'.") from None
-            if start > end:
-                raise ValueError(f"Invalid chapter range '{token}'. Start must be <= end.")
-            chapter_numbers = range(start, end + 1)
-        else:
-            try:
-                chapter_numbers = [int(token)]
-            except ValueError:
-                raise ValueError(f"Invalid chapter number '{token}'.") from None
-
-        for number in chapter_numbers:
-            if not (1 <= number <= total):
-                raise ValueError(f"Chapter {number} is out of bounds (1-{total}).")
-            selected.add(number)
-
-    return sorted(selected)
-
-
 def _slugify(text: str) -> str:
     """Generate a filesystem-friendly slug from the chapter title."""
     text = text.strip()
@@ -107,15 +72,6 @@ def _slugify(text: str) -> str:
 def _chapter_output_path(base_dir: Path, number: int, title: str) -> Path:
     stem = f"{number:03d}_{_slugify(title)}"
     return base_dir / f"{stem}.mp3"
-
-
-def _filter_chapters(chapters: Iterable[dict], selected_numbers: Iterable[int]) -> list[dict]:
-    lookup = {chapter["chapter_number"]: chapter for chapter in chapters}
-    missing = [number for number in selected_numbers if number not in lookup]
-    if missing:
-        numbers = ", ".join(str(num) for num in missing)
-        raise ValueError(f"Requested chapters not found in EPUB: {numbers}.")
-    return [lookup[number] for number in selected_numbers]
 
 
 def _synthesise_chunk(
@@ -178,7 +134,6 @@ def convert_epub_to_pod(
     book_data: dict,
     output_dir: Path,
     *,
-    chapter_spec: str | None,
     voice: str = "af_jessica",
     lang: str,
     speed: float = 0.9,
@@ -194,9 +149,6 @@ def convert_epub_to_pod(
     if not chapters:
         raise ValueError("No chapters were found in the EPUB file.")
 
-    selected_numbers = _parse_chapter_spec(chapter_spec or "", total=len(chapters))
-    selected_chapters = _filter_chapters(chapters, selected_numbers)
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
     provider_info = _build_provider(
@@ -210,7 +162,7 @@ def convert_epub_to_pod(
     output_base.mkdir(parents=True, exist_ok=True)
 
     generated_files: list[Path] = []
-    for chapter in selected_chapters:
+    for chapter in chapters:
         number = chapter["chapter_number"]
         title = chapter.get("chapter_title") or f"Chapter {number}"
         destination = _chapter_output_path(output_base, number, title)
@@ -259,14 +211,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         description="Convert EPUB chapters into MP3 files using a selectable TTS provider.",
     )
     parser.add_argument(
-        "book_json",
-        type=Path,
-        help="Path to a JSON file produced by parse_epub.py.",
-    )
-    parser.add_argument("output_dir", type=Path, help="Directory where chapter MP3 files will be written.")
-    parser.add_argument(
-        "--chapters",
-        help="Optional chapter selection (e.g. '1', '1-3', '1,3,5-6'). Defaults to all chapters.",
+        "book_title",
+        help="Book title used to locate ./data/{book_title}/book.json and output directory.",
     )
     parser.add_argument(
         "--voice",
@@ -286,6 +232,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--overwrite",
+        default=True,
         action="store_true",
         help="Overwrite existing MP3 files instead of skipping them.",
     )
@@ -307,26 +254,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
 
+    base_dir = Path("data") / args.book_title
+    book_json_path = base_dir / "book.json"
+
     try:
-        book_text = args.book_json.read_text(encoding="utf-8")
+        book_text = book_json_path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        parser.error(f"JSON file not found: {args.book_json}")
+        parser.error(f"JSON file not found: {book_json_path}")
         return 2
     except OSError as exc:
-        parser.error(f"Failed to read JSON file {args.book_json}: {exc}")
+        parser.error(f"Failed to read JSON file {book_json_path}: {exc}")
         return 2
 
     try:
         book_data = json.loads(book_text)
     except json.JSONDecodeError as exc:
-        parser.error(f"Failed to parse JSON file {args.book_json}: {exc}")
+        parser.error(f"Failed to parse JSON file {book_json_path}: {exc}")
         return 2
 
     try:
         generated = convert_epub_to_pod(
             book_data=book_data,
-            output_dir=args.output_dir,
-            chapter_spec=args.chapters,
+            output_dir=base_dir,
             voice=args.voice,
             lang=args.lang,
             speed=args.speed,
