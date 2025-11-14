@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|\n+")
 _MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
-_CACHE_PATH = Path("data") / "openroute_cache.json"
+_DEFAULT_CACHE_PATH = Path("data") / "openroute_cache.json"
 _AI_CHUNK_PROMPT_TEMPLATE = (
     "You receive OCR text already split into sentences. Each item has an 'index' (1-based) and the current 'sentence'. \n"
     "Only fix common OCR errors ,for example, mistake I as 1, I as T etc. MUST not make other changes. Only return the sentences that require edits. \n"
@@ -99,6 +99,21 @@ class EPUBTextProcessor:
     def __init__(self, *, ai_extract_text: bool = False) -> None:
         self._ai_extract_text = bool(ai_extract_text)
         self._openrouter_client: Optional[OpenAI] = None
+        self._cache_path: Path = _DEFAULT_CACHE_PATH
+
+    def _resolve_cache_path(self, state: Optional["EPUBAgentState"] = None) -> Path:
+        if state:
+            for key in ("epub_path", "output_path", "preview_path"):
+                raw_path = state.get(key)
+                if not isinstance(raw_path, str) or not raw_path:
+                    continue
+                candidate = Path(raw_path).expanduser()
+                base_dir = candidate.parent if candidate.suffix else candidate
+                if base_dir.name:
+                    self._cache_path = base_dir / "openroute_cache.json"
+                    return self._cache_path
+        self._cache_path = _DEFAULT_CACHE_PATH
+        return self._cache_path
 
     def normalize_titles(
         self,
@@ -108,14 +123,16 @@ class EPUBTextProcessor:
         chapters = state.get("chapters")
         chapter_list = chapters if isinstance(chapters, list) else []
         filtered = self.filter_chapters(chapter_list)
-        normalized = self._normalize_titles_with_openroute(filtered, errors)
+        cache_path = self._resolve_cache_path(state)
+        normalized = self._normalize_titles_with_openroute(filtered, errors, cache_path)
         return {"chapters": normalized}
 
     def normalize_first_sentences(
         self,
-        chapters: Sequence[Dict[str, Any]],
+        state: "EPUBAgentState",
         errors: List[str],
     ) -> Dict[str, Any]:
+        chapters = state.get("chapters", [])
         chapter_payload: List[Dict[str, Any]] = []
         for chapter in chapters:
             if not isinstance(chapter, dict):
@@ -138,8 +155,9 @@ class EPUBTextProcessor:
                 },
             )
 
+        cache_path = self._resolve_cache_path(state)
         try:
-            intro_json = normalize_first_sentences_with_openroute(chapter_payload)
+            intro_json = normalize_first_sentences_with_openroute(chapter_payload, cache_path)
             normalized_intros = json.loads(intro_json)
             if isinstance(normalized_intros, list):
                 for chapter, intro, payload in zip(chapters, normalized_intros, chapter_payload):
@@ -362,6 +380,7 @@ class EPUBTextProcessor:
         self,
         chapters: List[Dict[str, Any]],
         errors: List[str],
+        cache_path: Path,
     ) -> List[Dict[str, Any]]:
         if not chapters:
             return chapters
@@ -372,7 +391,7 @@ class EPUBTextProcessor:
         ]
 
         try:
-            normalized_json = convert_titles_with_openroute(titles)
+            normalized_json = convert_titles_with_openroute(titles, cache_path)
             normalized_titles = json.loads(normalized_json)
         except Exception as exc:  # pragma: no cover - depends on external service
             logger.error("OpenRoute normalization failed: %s", exc)
@@ -415,7 +434,7 @@ class EPUBTextProcessor:
         return normalized
 
 
-def convert_titles_with_openroute(titles: Sequence[str]) -> str:
+def convert_titles_with_openroute(titles: Sequence[str], cache_path: Path) -> str:
     if not titles:
         return json.dumps([], ensure_ascii=False)
 
@@ -451,7 +470,7 @@ def convert_titles_with_openroute(titles: Sequence[str]) -> str:
         "messages": messages,
     }
 
-    content = _get_cached_openroute_response(request_payload)
+    content = _get_cached_openroute_response(request_payload, cache_path)
     if content is None:
         load_dotenv()
         api_key = os.getenv("OPENROUTE_API_KEY")
@@ -469,7 +488,7 @@ def convert_titles_with_openroute(titles: Sequence[str]) -> str:
         if not content:
             logger.error("OpenRoute API returned empty content for payload: %s", payload)
             raise RuntimeError("OpenRoute API returned no content for the request.")
-        _store_openroute_response(request_payload, content)
+        _store_openroute_response(request_payload, content, cache_path)
     else:
         logger.info("OpenRoute title normalization cache hit.")
 
@@ -494,6 +513,7 @@ def convert_titles_with_openroute(titles: Sequence[str]) -> str:
 
 def normalize_first_sentences_with_openroute(
     chapter_requests: Sequence[Dict[str, Any]],
+    cache_path: Path,
 ) -> str:
     if not chapter_requests:
         return json.dumps([], ensure_ascii=False)
@@ -557,7 +577,7 @@ def normalize_first_sentences_with_openroute(
         "messages": messages,
     }
 
-    content = _get_cached_openroute_response(request_payload)
+    content = _get_cached_openroute_response(request_payload, cache_path)
     if content is None:
         load_dotenv()
         api_key = os.getenv("OPENROUTE_API_KEY")
@@ -575,7 +595,7 @@ def normalize_first_sentences_with_openroute(
         if not content:
             logger.error("OpenRoute API returned empty content for introduction normalization.")
             raise RuntimeError("OpenRoute API returned no content for the request.")
-        _store_openroute_response(request_payload, content)
+        _store_openroute_response(request_payload, content, cache_path)
     else:
         logger.info("OpenRoute first-sentence normalization cache hit.")
 
@@ -602,8 +622,8 @@ def normalize_first_sentences_with_openroute(
     return json.dumps(normalized_sentences, ensure_ascii=False)
 
 
-def _get_cached_openroute_response(payload: Dict[str, Any]) -> str | None:
-    cache = _load_openroute_cache()
+def _get_cached_openroute_response(payload: Dict[str, Any], cache_path: Path) -> str | None:
+    cache = _load_openroute_cache(cache_path)
     key = _openroute_cache_key(payload)
     entry = cache.get(key)
     if not isinstance(entry, dict):
@@ -612,18 +632,18 @@ def _get_cached_openroute_response(payload: Dict[str, Any]) -> str | None:
     return response if isinstance(response, str) else None
 
 
-def _store_openroute_response(payload: Dict[str, Any], response: str) -> None:
-    cache = _load_openroute_cache()
+def _store_openroute_response(payload: Dict[str, Any], response: str, cache_path: Path) -> None:
+    cache = _load_openroute_cache(cache_path)
     key = _openroute_cache_key(payload)
     cache[key] = {"request": payload, "response": response}
-    _save_openroute_cache(cache)
+    _save_openroute_cache(cache, cache_path)
 
 
-def _load_openroute_cache() -> Dict[str, Any]:
-    if not _CACHE_PATH.exists():
+def _load_openroute_cache(cache_path: Path) -> Dict[str, Any]:
+    if not cache_path.exists():
         return {}
     try:
-        with _CACHE_PATH.open("r", encoding="utf-8") as handle:
+        with cache_path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
             return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError) as exc:
@@ -631,10 +651,10 @@ def _load_openroute_cache() -> Dict[str, Any]:
         return {}
 
 
-def _save_openroute_cache(cache: Dict[str, Any]) -> None:
+def _save_openroute_cache(cache: Dict[str, Any], cache_path: Path) -> None:
     try:
-        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CACHE_PATH.open("w", encoding="utf-8") as handle:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with cache_path.open("w", encoding="utf-8") as handle:
             json.dump(cache, handle, ensure_ascii=False, indent=2)
     except OSError as exc:
         logger.warning("Unable to write OpenRoute cache: %s", exc)
