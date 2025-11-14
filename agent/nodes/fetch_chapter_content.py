@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Callable, List, Optional
 
@@ -52,6 +53,35 @@ def make_fetch_chapter_content_node(
     return fetch_chapter_content
 
 
+logger = logging.getLogger(__name__)
+
+
+_BLOCK_LEVEL_TAGS = {
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "div",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "p",
+    "pre",
+    "section",
+    "ul",
+    "ol",
+}
+
+
 class _ContentStripper(HTMLParser):
     """Strip HTML tags while honoring ignored classes."""
 
@@ -75,16 +105,23 @@ class _ContentStripper(HTMLParser):
         self.close()
         text = "".join(self._parts).strip()
         text = text.replace("\n", " ")
-        return " ".join(text.split())
+        cleaned = " ".join(text.split())
+        return cleaned
 
     def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() in _BLOCK_LEVEL_TAGS:
+            self._append_separator()
         self._push_ignore(attrs)
 
     def handle_startendtag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() in _BLOCK_LEVEL_TAGS:
+            self._append_separator()
         self._push_ignore(attrs)
         self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in _BLOCK_LEVEL_TAGS:
+            self._append_separator()
         if self._ignore_stack:
             self._ignore_stack.pop()
 
@@ -109,3 +146,13 @@ class _ContentStripper(HTMLParser):
                     should_ignore = True
                     break
         self._ignore_stack.append(should_ignore)
+
+    def _append_separator(self) -> None:
+        if not self._parts:
+            return
+        last = self._parts[-1]
+        if not last:
+            return
+        if last[-1].isspace():
+            return
+        self._parts.append(" ")

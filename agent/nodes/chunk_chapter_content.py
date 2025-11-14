@@ -1,24 +1,37 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, List
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Dict, List
 
+import nltk
+from nltk.data import load as nltk_data_load
+from nltk.tokenize import PunktSentenceTokenizer
 from .text_processing import EPUBTextProcessor
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
     from ..epub_agent import ChapterPayload, EPUBAgentState
 
 
-_SENTENCE_TERMINATORS = ".?!"
-_COMMON_ABBREVIATIONS = {
-    "dr",
-    "mr",
-    "mrs",
-    "ms",
-    "prof",
-    "sir",
-    "jr",
-    "rev",
-}
+def _load_sentence_tokenizer() -> PunktSentenceTokenizer:
+    try:
+        return nltk_data_load("tokenizers/punkt/english.pickle")
+    except LookupError:
+        # Attempt to download missing punkt resources automatically.
+        for resource in ("punkt", "punkt_tab"):
+            try:
+                nltk.download(resource, quiet=True)
+            except Exception:
+                continue
+        try:
+            return nltk_data_load("tokenizers/punkt/english.pickle")
+        except LookupError as exc:  # pragma: no cover - depends on env
+            raise RuntimeError(
+                "NLTK punkt tokenizer unavailable. Run python -m nltk.downloader punkt punkt_tab."
+            ) from exc
+
+
+_SENTENCE_TOKENIZER: PunktSentenceTokenizer = _load_sentence_tokenizer()
 
 
 def _split_text_into_chunks(text: str, chunk_size: int) -> List[str]:
@@ -26,45 +39,16 @@ def _split_text_into_chunks(text: str, chunk_size: int) -> List[str]:
     return [text[index : index + size] for index in range(0, len(text), size)]
 
 
-def _looks_like_abbreviation(text: str, punct_index: int) -> bool:
-    if punct_index <= 0 or punct_index > len(text):
-        return False
-    word_end = punct_index
-    word_start = word_end
-    while word_start > 0 and text[word_start - 1].isalpha():
-        word_start -= 1
-    if word_start == word_end:
-        return False
-    candidate = text[word_start:word_end].lower()
-    return candidate in _COMMON_ABBREVIATIONS
+def _segment_text_into_sentences(text: str) -> List[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    return _SENTENCE_TOKENIZER.tokenize(stripped)
 
 
-def _segment_text_by_punctuation(text: str) -> List[str]:
-    segments: List[str] = []
-    start = 0
-    idx = 0
-    length = len(text)
-    while idx < length:
-        char = text[idx]
-        if char in _SENTENCE_TERMINATORS:
-            if char == "." and _looks_like_abbreviation(text, idx):
-                idx += 1
-                continue
-            idx += 1
-            while idx < length and text[idx].isspace():
-                idx += 1
-            segments.append(text[start:idx])
-            start = idx
-            continue
-        idx += 1
-    if start < length:
-        segments.append(text[start:])
-    return [segment for segment in segments if segment.strip()]
-
-
-def _split_text_by_punctuation(text: str, chunk_size: int) -> List[str]:
+def _split_text_by_sentences(text: str, chunk_size: int) -> List[str]:
     size = max(1, chunk_size)
-    segments = _segment_text_by_punctuation(text)
+    segments = _segment_text_into_sentences(text)
     if not segments:
         return _split_text_into_chunks(text, size)
 
@@ -74,29 +58,35 @@ def _split_text_by_punctuation(text: str, chunk_size: int) -> List[str]:
 
     def flush_current() -> None:
         nonlocal current_parts, current_len
-        chunk = "".join(current_parts).strip()
+        chunk = " ".join(part.strip() for part in current_parts if part.strip()).strip()
         if chunk:
             chunks.append(chunk)
         current_parts = []
         current_len = 0
 
     for segment in segments:
-        if len(segment) > size:
+        stripped_segment = segment.strip()
+        if not stripped_segment:
+            continue
+
+        segment_len = len(stripped_segment)
+        if segment_len > size:
             flush_current()
-            for piece in _split_text_into_chunks(segment, size):
+            for piece in _split_text_into_chunks(stripped_segment, size):
                 cleaned = piece.strip()
                 if cleaned:
                     chunks.append(cleaned)
             continue
 
-        if current_len + len(segment) <= size:
-            current_parts.append(segment)
-            current_len += len(segment)
+        projected_len = current_len + segment_len + (1 if current_parts else 0)
+        if projected_len <= size:
+            current_parts.append(stripped_segment)
+            current_len = projected_len
             continue
 
         flush_current()
-        current_parts.append(segment)
-        current_len = len(segment)
+        current_parts.append(stripped_segment)
+        current_len = segment_len
 
     flush_current()
     return chunks
@@ -111,6 +101,17 @@ def make_chunk_chapter_content_node(
         chapters = state.get("chapters", [])
         if not chapters:
             return {}
+
+        epub_path = state.get("epub_path")
+        book_title = ""
+        if isinstance(epub_path, str):
+            try:
+                book_title = Path(epub_path).expanduser().resolve().parent.name
+            except OSError:
+                book_title = Path(epub_path).parent.name
+        ai_enabled = bool(getattr(text_processor, "_ai_extract_text", False))
+        ai_changes_log: List[Dict[str, Any]] = []
+        chapter_change_index: Dict[int, Dict[str, Any]] = {}
 
         state_chunk_size = state.get("chunk_size")
         effective_chunk_size = (
@@ -127,8 +128,8 @@ def make_chunk_chapter_content_node(
             if not isinstance(content, str) or not content:
                 updated_chapters.append(chapter)
                 continue
-            chunks = _split_text_by_punctuation(content, effective_chunk_size)
-            chunks = text_processor.convert_chunks_for_tts(chapter, chunks)
+            chapter_chunks = _split_text_by_sentences(content, effective_chunk_size)
+            chunks, chunk_change_entries = text_processor.convert_chunks_for_tts(chapter, chapter_chunks)
             existing_chunks = chapter.get("chunks")
             if isinstance(existing_chunks, list) and existing_chunks == chunks:
                 updated_chapters.append(chapter)
@@ -137,6 +138,22 @@ def make_chunk_chapter_content_node(
             chapter_copy["chunks"] = chunks
             updated_chapters.append(chapter_copy)
             modified = True
+
+            chapter_number = chapter.get("chapter_number")
+            if chunk_change_entries and isinstance(chapter_number, int):
+                chapter_entry = chapter_change_index.get(chapter_number)
+                if chapter_entry is None:
+                    chapter_entry = {"chapter_number": chapter_number, "chunks": []}
+                    chapter_change_index[chapter_number] = chapter_entry
+                    ai_changes_log.append(chapter_entry)
+                chapter_entry["chunks"].extend(chunk_change_entries)
+
+        if ai_enabled and book_title:
+            changes_path = Path("data") / book_title / "ai_changes.json"
+            changes_path.parent.mkdir(parents=True, exist_ok=True)
+            with changes_path.open("w", encoding="utf-8") as handle:
+                json.dump(ai_changes_log, handle, indent=2, ensure_ascii=False)
+
         return {"chapters": updated_chapters} if modified else {}
 
     return chunk_chapter_content

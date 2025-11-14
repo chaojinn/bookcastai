@@ -6,9 +6,12 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import nltk
 from dotenv import load_dotenv
+from nltk.data import load as nltk_data_load
+from nltk.tokenize import PunktSentenceTokenizer
 from openai import OpenAI
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
@@ -20,15 +23,32 @@ _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|\n+")
 _MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
 _CACHE_PATH = Path("data") / "openroute_cache.json"
 _AI_CHUNK_PROMPT_TEMPLATE = (
-    "convert the following text from ocr so it can be feed to a tts software. using rules \n"
-    "1) add extra space if ocr missed space result in 2 words combined without space. \n"
-    "2) remove unneeded spaces from ocr. \n"
-    "3) remove parts might be introduced to text by ocr process which make sentence break. \n"
-    "4) make sure the text have proper uppercase / lowercase.\n"
-    "5)make minimal changes to the text. \n"
-    "6)return changed text in whole without adding anything at the front or end.\n"
-    "here is the text: {chunk_text}"
+    "You receive OCR text already split into sentences. Each item has an 'index' (1-based) and the current 'sentence'. \n"
+    "Only fix common OCR errors ,for example, mistake I as 1, I as T etc. MUST not make other changes. Only return the sentences that require edits. \n"
+    "Respond with a JSON array like [{{\"index\": 3, \"sentence\": \"Corrected sentence.\"}}]. "
+    "If no changes are necessary, respond with []. Do not wrap the response in any prose.\n"
+    "Sentences JSON:\n{sentences_json}"
 )
+
+
+def _load_sentence_tokenizer() -> PunktSentenceTokenizer:
+    try:
+        return nltk_data_load("tokenizers/punkt/english.pickle")
+    except LookupError:
+        for resource in ("punkt", "punkt_tab"):
+            try:
+                nltk.download(resource, quiet=True)
+            except Exception:
+                continue
+        try:
+            return nltk_data_load("tokenizers/punkt/english.pickle")
+        except LookupError as exc:  # pragma: no cover - environment specific
+            raise RuntimeError(
+                "NLTK punkt tokenizer unavailable. Run python -m nltk.downloader punkt punkt_tab."
+            ) from exc
+
+
+_CHUNK_SENTENCE_TOKENIZER: PunktSentenceTokenizer = _load_sentence_tokenizer()
 
 
 def _normalize_whitespace(value: str) -> str:
@@ -57,6 +77,22 @@ def _extract_first_sentence(text: str) -> tuple[str, int]:
         return _normalize_whitespace(cleaned), 1
     combined = " ".join(collected)
     return _normalize_whitespace(combined), sentence_count
+
+
+def _split_sentences_with_indices(text: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    stripped = text.strip()
+    if not stripped:
+        return [], []
+    sentences = _CHUNK_SENTENCE_TOKENIZER.tokenize(stripped)
+    entries: List[Dict[str, Any]] = []
+    cleaned_sentences: List[str] = []
+    for idx, sentence in enumerate(sentences, start=1):
+        cleaned = sentence.strip()
+        if not cleaned:
+            continue
+        entries.append({"index": idx, "sentence": cleaned})
+        cleaned_sentences.append(cleaned)
+    return entries, cleaned_sentences
 
 
 class EPUBTextProcessor:
@@ -172,18 +208,18 @@ class EPUBTextProcessor:
         self,
         chapter: Optional[Dict[str, Any]],
         chunks: Sequence[str],
-    ) -> List[str]:
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
         if not chunks:
-            return []
+            return [], []
         chunk_list = [chunk for chunk in chunks]
         if not self._ai_extract_text:
-            return chunk_list
+            return chunk_list, []
 
         try:
             client = self._get_openrouter_client()
         except RuntimeError as exc:
             logger.error("AI chunk extraction unavailable: %s", exc)
-            return chunk_list
+            return chunk_list, []
 
         chapter_title = ""
         chapter_number = None
@@ -195,6 +231,7 @@ class EPUBTextProcessor:
             label = f"Chapter {chapter_number}: {label}" if chapter_title else f"Chapter {chapter_number}"
 
         cleaned_chunks: List[str] = []
+        per_chunk_changes: List[Dict[str, Any]] = []
         total = len(chunk_list)
         for index, chunk in enumerate(chunk_list, start=1):
             logger.info("AI extracting chunk %d/%d for %s", index, total, label)
@@ -202,7 +239,7 @@ class EPUBTextProcessor:
                 cleaned_chunks.append(chunk)
                 continue
             try:
-                cleaned_chunk = self._clean_chunk_with_ai(client, chunk)
+                cleaned_chunk, chunk_changes = self._clean_chunk_with_ai(client, chunk)
             except Exception as exc:  # pragma: no cover - network failure path
                 logger.error(
                     "AI extraction failed for chunk %d/%d (%s): %s",
@@ -212,8 +249,16 @@ class EPUBTextProcessor:
                     exc,
                 )
                 cleaned_chunk = chunk
+                chunk_changes = []
             cleaned_chunks.append(cleaned_chunk)
-        return cleaned_chunks
+            if chunk_changes:
+                per_chunk_changes.append(
+                    {
+                        "chunk_number": index,
+                        "changes": chunk_changes,
+                    },
+                )
+        return cleaned_chunks, per_chunk_changes
 
     def _get_openrouter_client(self) -> OpenAI:
         if self._openrouter_client is not None:
@@ -228,8 +273,15 @@ class EPUBTextProcessor:
         )
         return self._openrouter_client
 
-    def _clean_chunk_with_ai(self, client: OpenAI, chunk_text: str) -> str:
-        prompt = _AI_CHUNK_PROMPT_TEMPLATE.format(chunk_text=chunk_text)
+    def _clean_chunk_with_ai(self, client: OpenAI, chunk_text: str) -> Tuple[str, List[Dict[str, Any]]]:
+        sentence_entries, sentence_text = _split_sentences_with_indices(chunk_text)
+        if not sentence_entries:
+            return chunk_text, []
+
+        prompt = _AI_CHUNK_PROMPT_TEMPLATE.format(
+            sentences_json=json.dumps(sentence_entries, ensure_ascii=False),
+        )
+        #logger.info("OpenRoute chunk request (model=%s): %s", _MODEL_NAME, prompt)
         response = client.chat.completions.create(
             model=_MODEL_NAME,
             temperature=0,
@@ -237,7 +289,8 @@ class EPUBTextProcessor:
                 {
                     "role": "system",
                     "content": (
-                        "You clean OCR text so it can be consumed by TTS engines. Respond with the fixed text only."
+                        "You clean OCR text so it can be consumed by TTS engines. "
+                        "Return JSON only as instructed."
                     ),
                 },
                 {
@@ -247,10 +300,63 @@ class EPUBTextProcessor:
             ],
         )
         content = response.choices[0].message.content if response.choices else None
+        #logger.info("OpenRoute chunk response: %s", content)
         if not content:
             logger.error("AI extraction returned empty response. Falling back to original chunk.")
-            return chunk_text
-        return content.strip()
+            return chunk_text, []
+
+        cleaned_content = content.strip()
+        if cleaned_content.startswith("```"):
+            lines = [line for line in cleaned_content.splitlines() if not line.strip().startswith("```")]
+            cleaned_content = "\n".join(lines).strip()
+
+        try:
+            changed_items = json.loads(cleaned_content)
+        except json.JSONDecodeError:
+            logger.error("AI extraction returned invalid JSON: %s", cleaned_content)
+            return chunk_text, []
+
+        if isinstance(changed_items, dict):
+            changed_items = changed_items.get("changes")
+        if isinstance(changed_items, str):
+            try:
+                changed_items = json.loads(changed_items)
+            except json.JSONDecodeError:
+                changed_items = None
+        if not isinstance(changed_items, list):
+            return chunk_text, []
+
+        updated_sentences = list(sentence_text)
+        applied_changes: List[Dict[str, Any]] = []
+        for item in changed_items:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            new_sentence = item.get("sentence")
+            if not isinstance(index, int) or not isinstance(new_sentence, str):
+                continue
+            if index < 1 or index > len(updated_sentences):
+                continue
+            normalized_sentence = new_sentence.strip()
+            if not normalized_sentence:
+                continue
+            old_sentence = updated_sentences[index - 1]
+            if normalized_sentence == old_sentence:
+                continue
+            updated_sentences[index - 1] = normalized_sentence
+            applied_changes.append(
+                {
+                    "sentence_number": index,
+                    "old": old_sentence,
+                    "new": normalized_sentence,
+                },
+            )
+        logger.info("applied_changes: %s", json.dumps(applied_changes, indent=2))
+        if not applied_changes:
+            return chunk_text, []
+
+        cleaned_chunk = " ".join(updated_sentences).strip()
+        return cleaned_chunk, applied_changes
 
     def _normalize_titles_with_openroute(
         self,

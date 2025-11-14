@@ -246,7 +246,9 @@ def _configure_logging() -> None:
     root_logger = logging.getLogger()
     if root_logger.handlers:
         return
-    handler = logging.StreamHandler(stream=sys.stdout)
+    log_path = Path("debug.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
     handler.setFormatter(formatter)
     root_logger.addHandler(handler)
