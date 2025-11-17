@@ -22,7 +22,7 @@ from html import unescape
 from dotenv import load_dotenv
 
 
-def upload_feed(metadata: dict, feedFile: str) -> None:
+def upload_feed(metadata: dict, feedFile: str, book_title: str | None = None) -> None:
     """Upload the generated feed XML and chapter MP3 files to the remote host."""
     # Lazy import to avoid altering module load order
     from scp import run_scp, run_ssh  # type: ignore
@@ -65,8 +65,10 @@ def upload_feed(metadata: dict, feedFile: str) -> None:
     if not channel_title:
         raise RuntimeError("Channel title not found in feed or metadata.")
 
-    # Replace spaces with underscores for the remote directory name
-    safe_title = re.sub(r"\s+", "_", channel_title).strip("_") or "feed"
+    # Prefer the CLI-supplied book title for deriving the remote directory
+    cli_title = (book_title or "").strip()
+    safe_title_source = cli_title or channel_title
+    safe_title = re.sub(r"\s+", "_", safe_title_source).strip("_") or "feed"
     safe_title = safe_title.lower()
     remote_dir = f"{remote_base.rstrip('/')}/{safe_title}"
 
@@ -789,7 +791,7 @@ def main(argv: list[str] | None = None) -> int:
     feed.write(output_path, encoding="utf-8", xml_declaration=True)
     print(f"Generated RSS feed at {output_path}")
 
-    upload_feed(metadata, str(output_path))
+    upload_feed(metadata, str(output_path), book_title=args.book_title)
 
     return 0
 
