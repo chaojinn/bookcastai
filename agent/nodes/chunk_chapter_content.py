@@ -193,13 +193,18 @@ def _split_text_by_sentences(
         chunk = " ".join(part.strip() for part in current_parts if part.strip()).strip()
         if chunk:
             if len(chunk) > upper_size:
-                logger.warning(
-                    "Chunk length %s exceeds max %s%s",
-                    len(chunk),
-                    upper_size,
-                    f" (chapter {chapter_number})" if chapter_number is not None else "",
-                )
-            chunks.append(chunk)
+                split_chunks = _split_chunk_at_delimiter(chunk, upper_size) or [chunk]
+                for piece in split_chunks:
+                    if len(piece) > upper_size:
+                        logger.warning(
+                            "Chunk length %s exceeds max %s%s",
+                            len(piece),
+                            upper_size,
+                            f" (chapter {chapter_number})" if chapter_number is not None else "",
+                        )
+                    chunks.append(piece)
+            else:
+                chunks.append(chunk)
         current_parts = []
         current_len = 0
 
@@ -211,13 +216,16 @@ def _split_text_by_sentences(
 
         if sentence_len > upper_size:
             flush_current()
-            chunks.append(stripped_sentence)
-            logger.warning(
-                "Chunk length %s exceeds max %s%s",
-                sentence_len,
-                upper_size,
-                f" (chapter {chapter_number})" if chapter_number is not None else "",
-            )
+            split_chunks = _split_chunk_at_delimiter(stripped_sentence, upper_size) or [stripped_sentence]
+            for piece in split_chunks:
+                if len(piece) > upper_size:
+                    logger.warning(
+                        "Chunk length %s exceeds max %s%s",
+                        len(piece),
+                        upper_size,
+                        f" (chapter {chapter_number})" if chapter_number is not None else "",
+                    )
+                chunks.append(piece)
             continue
 
         projected_len = current_len + sentence_len + (1 if current_parts else 0)
@@ -239,6 +247,29 @@ def _split_text_by_sentences(
 
     flush_current()
     return chunks
+
+
+def _split_chunk_at_delimiter(text: str, upper_size: int) -> List[str]:
+    """Split an oversized chunk at the comma/semicolon nearest the midpoint."""
+    stripped = text.strip()
+    if len(stripped) <= upper_size:
+        return [stripped] if stripped else []
+
+    mid = len(stripped) // 2
+    split_points = [idx for idx, ch in enumerate(stripped) if ch in {",", ";"}]
+    if not split_points:
+        return [stripped] if stripped else []
+
+    split_idx = min(split_points, key=lambda idx: abs(idx - mid))
+    left = stripped[: split_idx + 1].strip()
+    right = stripped[split_idx + 1 :].strip()
+
+    parts: List[str] = []
+    if left:
+        parts.append(left)
+    if right:
+        parts.append(right)
+    return parts
 
 
 def _build_sentences_payload(
