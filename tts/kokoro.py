@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict
 
@@ -27,6 +30,8 @@ DEFAULT_LANG = "en-us"
 DEFAULT_SPEED = 0.9
 SUPPORTED_FORMATS = {"mp3", "wav"}
 DEFAULT_SAMPLE_RATE = 24_000
+
+logger = logging.getLogger(__name__)
 
 
 class KokoroTTSProvider(TTSProvider):
@@ -58,7 +63,7 @@ class KokoroTTSProvider(TTSProvider):
         speed = params.get("speed", DEFAULT_SPEED)
         fmt = str(params.get("format", request.output_file.suffix.lstrip(".") or "mp3")).lower()
         split_pattern_value = params.get("split_pattern")
-        split_pattern = split_pattern_value if isinstance(split_pattern_value, str) else None
+        split_pattern = split_pattern_value if isinstance(split_pattern_value, str) else "$^"
 
         if fmt not in SUPPORTED_FORMATS:
             supported = ", ".join(sorted(SUPPORTED_FORMATS))
@@ -74,9 +79,8 @@ class KokoroTTSProvider(TTSProvider):
         lang_code = self._resolve_lang_code(lang, voice)
         pipeline = self._get_pipeline(lang_code)
 
-        pipeline_kwargs = {"voice": voice, "speed": speed_value}
-        if split_pattern is not None:
-            pipeline_kwargs["split_pattern"] = split_pattern
+        pipeline_kwargs = {"voice": voice, "speed": speed_value, "split_pattern": split_pattern}
+        logger.info("Kokoro split_pattern in use: %s", split_pattern)
 
         try:
             generator = pipeline(
@@ -139,10 +143,14 @@ class KokoroTTSProvider(TTSProvider):
 
     @staticmethod
     def _write_mp3(path: Path, waveform: np.ndarray) -> None:
+        if _ffmpeg_available():
+            _encode_mp3_with_ffmpeg(path, waveform)
+            return
+
         if AudioSegment is None:
             raise TTSProviderError(
-                "pydub is required to export MP3 audio but is not installed. "
-                "Install it via 'pip install pydub'."
+                "pydub is required to export MP3 audio but is not installed, and ffmpeg is unavailable. "
+                "Install pydub or ffmpeg."
             )
         buffer = BytesIO()
         sf.write(buffer, waveform, DEFAULT_SAMPLE_RATE, format="WAV", subtype="PCM_16")
@@ -157,3 +165,49 @@ class KokoroTTSProvider(TTSProvider):
             raise TTSProviderError(
                 f"Failed to write MP3 audio to '{path}'. Ensure ffmpeg is installed and on PATH. ({exc})"
             ) from exc
+
+
+def _ffmpeg_available() -> bool:
+    try:
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-version"],
+            check=True,
+            capture_output=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _encode_mp3_with_ffmpeg(path: Path, waveform: np.ndarray) -> None:
+    tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_wav_path = Path(tmp_wav.name)
+    try:
+        sf.write(tmp_wav_path, waveform, DEFAULT_SAMPLE_RATE, format="WAV", subtype="PCM_16")
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(tmp_wav_path),
+            "-ar",
+            str(DEFAULT_SAMPLE_RATE),
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            str(path),
+        ]
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise TTSProviderError(f"ffmpeg MP3 encoding failed: {exc}") from exc
+    finally:
+        try:
+            tmp_wav.close()
+            tmp_wav_path.unlink(missing_ok=True)
+        except Exception:
+            logger.debug("Temporary WAV cleanup failed for %s", tmp_wav_path)

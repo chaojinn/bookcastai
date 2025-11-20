@@ -293,7 +293,7 @@ def _create_arg_parser() -> "argparse.ArgumentParser":  # pragma: no cover - CLI
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=2000,
+        default=200,
         help="Maximum characters per chapter chunk stored alongside the original text (default: 2000).",
     )
     parser.add_argument(

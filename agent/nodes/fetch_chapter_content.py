@@ -153,6 +153,14 @@ class _ContentStripper(HTMLParser):
         last = self._parts[-1]
         if not last:
             return
-        if last[-1].isspace():
+        # Ensure block boundaries end sentences cleanly.
+        last_non_space = None
+        for ch in reversed(last):
+            if not ch.isspace():
+                last_non_space = ch
+                break
+        if last_non_space is None:
             return
+        if last_non_space not in {".", "?", "!"}:
+            self._parts[-1] = last.rstrip() + "."
         self._parts.append(" ")
