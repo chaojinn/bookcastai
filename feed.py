@@ -570,6 +570,7 @@ def _build_item(
 
 def build_feed(
     metadata: dict[str, Any],
+    book_title:str,
     audio_dir: Path,
     *,
     audio_base_url: str | None,
@@ -604,6 +605,7 @@ def build_feed(
     base_pub_date = pub_date or now
     safe_title = re.sub(r"\s+", "_", channel_title).strip("_") or "feed"
     safe_title = safe_title.lower()
+    safe_title = book_title
     rss = ET.Element("rss", attrib={"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
     ET.SubElement(channel, "title").text = channel_title
@@ -707,7 +709,7 @@ def build_feed(
             audio_base_url,
             default_author,
             chapter_pub,
-            metadata.get("title"),
+            book_title,
         )
         channel.append(item)
 
@@ -774,6 +776,7 @@ def main(argv: list[str] | None = None) -> int:
 
     feed = build_feed(
         metadata,
+        args.book_title,
         audio_dir,
         audio_base_url=audio_url_prefix,
         feed_title=args.feed_title,
