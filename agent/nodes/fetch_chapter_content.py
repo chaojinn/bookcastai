@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Callable, List, Optional
 
@@ -106,6 +107,9 @@ class _ContentStripper(HTMLParser):
         text = "".join(self._parts).strip()
         text = text.replace("\n", " ")
         cleaned = " ".join(text.split())
+        # Remove parenthetical content entirely.
+        cleaned = re.sub(r"\([^)]*\)", "", cleaned)
+        cleaned = " ".join(cleaned.split())
         return cleaned
 
     def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
@@ -161,6 +165,6 @@ class _ContentStripper(HTMLParser):
                 break
         if last_non_space is None:
             return
-        if last_non_space not in {".", "?", "!"}:
+        if last_non_space not in {".", "?", "!", ":", ";",","}:
             self._parts[-1] = last.rstrip() + "."
         self._parts.append(" ")

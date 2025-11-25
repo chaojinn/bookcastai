@@ -11,6 +11,7 @@ import nltk
 from nltk.data import load as nltk_data_load
 from nltk.tokenize import PunktSentenceTokenizer
 from .text_processing import EPUBTextProcessor
+from .roman import convert_roman_numerals
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
     from ..epub_agent import ChapterPayload, EPUBAgentState
@@ -352,8 +353,13 @@ def make_chunk_chapter_content_node(
             if not isinstance(content, str) or not content:
                 updated_chapters.append(chapter)
                 continue
+            conversion_result = convert_roman_numerals(content)
+            processed_content = (
+                conversion_result.get("changed_text") if isinstance(conversion_result, dict) else content
+            )
+            content_to_process = processed_content if isinstance(processed_content, str) and processed_content else content
             chapter_chunks = _split_text_by_sentences(
-                content,
+                content_to_process,
                 effective_chunk_size,
                 chapter_number=chapter.get("chapter_number") if isinstance(chapter.get("chapter_number"), int) else None,
             )
