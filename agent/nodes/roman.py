@@ -13,7 +13,7 @@ logger.setLevel(logging.DEBUG)
 logger.propagate = False
 
 _ROMAN_NUMERAL_PATTERN = re.compile(
-    r"(\s)(M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))(?=[\s.?!])"
+    r"(\s)(X{0,3}(?:IX|IV|V?I{0,3}))(?=[\s.?!])"
 )
 
 
@@ -86,6 +86,8 @@ def _convert_sentence(sentence: str, sentence_number: int) -> Tuple[str, List[Di
         token = match.group(2)
         token_upper = token.upper()
 
+        if any(char not in {"I", "V", "X"} for char in token_upper):
+            continue
         if token_upper == "I" and not _should_convert_single_i(sentence, start, end):
             continue
 
