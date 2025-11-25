@@ -17,6 +17,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
     from ..epub_agent import ChapterPayload, EPUBAgentState
 
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.FileHandler("debug.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+logger.setLevel(logging.DEBUG)
+logger.propagate = False
 
 _ABBREVIATIONS = {
     "Mr.",
@@ -354,6 +360,25 @@ def make_chunk_chapter_content_node(
                 updated_chapters.append(chapter)
                 continue
             conversion_result = convert_roman_numerals(content)
+            logger.debug(
+                "Roman conversion raw result type=%s keys=%s",
+                type(conversion_result).__name__,
+                list(conversion_result.keys()) if isinstance(conversion_result, dict) else None,
+            )
+            if isinstance(conversion_result, dict):
+                roman_changes = conversion_result.get("changes") or []
+                logger.debug(
+                    "Roman conversion changes count=%s changed_text_present=%s",
+                    len(roman_changes) if isinstance(roman_changes, list) else "n/a",
+                    isinstance(conversion_result.get("changed_text"), str),
+                )
+                if roman_changes:
+                    chapter_number = chapter.get("chapter_number")
+                    logger.debug(
+                        "Roman numeral conversions%s: %s",
+                        f" for chapter {chapter_number}" if chapter_number is not None else "",
+                        roman_changes,
+                    )
             processed_content = (
                 conversion_result.get("changed_text") if isinstance(conversion_result, dict) else content
             )
