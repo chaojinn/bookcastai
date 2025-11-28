@@ -19,10 +19,10 @@ _MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
 
 def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAgentState"]:
     def construct_book_structure(state: "EPUBAgentState") -> "EPUBAgentState":
+        chapters = _merge_untitled_chapters(state.get("chapters", []))
         preview_path_value = state.get("preview_path")
         if not preview_path_value:
-            return {}
-        chapters = state.get("chapters", [])
+            return {"chapters": chapters}
         preview_items: List[dict[str, str | int]] = []
         for chapter in chapters:
             if not isinstance(chapter, dict):
@@ -47,7 +47,7 @@ def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAg
         except OSError as exc:
             errors = list(state.get("errors", []))
             errors.append(f"Failed to write preview JSON: {exc}")
-            return {"errors": errors}
+            return {"chapters": chapters, "errors": errors}
 
         cache_path = preview_path.parent / "openroute_cache.json"
         selected_numbers = _query_openroute_for_chapters(preview_items, cache_path=cache_path)
@@ -64,9 +64,67 @@ def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAg
                     chapter["chapter_number"] = index
                 return {"chapters": updated_chapters}
             logger.warning("OpenRoute selection returned numbers not matching any chapter.")
-        return {}
+        return {"chapters": chapters}
 
     return construct_book_structure
+
+
+def _merge_untitled_chapters(chapters: Sequence[dict[str, object]]) -> List[dict[str, object]]:
+    """Merge chapters with empty titles into the next titled chapter.
+
+    Content from untitled chapters is prepended to the content of the next
+    titled chapter, eliminating standalone untitled entries.
+    """
+
+    merged: List[dict[str, object]] = []
+    carry_content = ""
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+
+        title = chapter.get("chapter_title")
+        content = chapter.get("content_text") if isinstance(chapter.get("content_text"), str) else ""
+        normalized_title = title if isinstance(title, str) else ""
+
+        if not normalized_title.strip():
+            carry_content = _merge_text_with_space(carry_content, content)
+            continue
+
+        merged_content = content
+        if carry_content:
+            merged_content = _merge_text_with_space(carry_content, merged_content)
+            carry_content = ""
+
+        new_chapter = dict(chapter)
+        new_chapter["chapter_title"] = normalized_title
+        new_chapter["content_text"] = merged_content
+        merged.append(new_chapter)
+
+    if carry_content:
+        if merged:
+            last_content = merged[-1].get("content_text")
+            merged[-1]["content_text"] = _merge_text_with_space(
+                carry_content,
+                last_content if isinstance(last_content, str) else "",
+            )
+        else:
+            merged.append({"chapter_number": 1, "chapter_title": "", "content_text": carry_content})
+
+    for index, chapter in enumerate(merged, start=1):
+        chapter["chapter_number"] = index
+
+    return merged
+
+
+def _merge_text_with_space(prefix: str, suffix: str) -> str:
+    """Join two text segments ensuring a separating space when both exist."""
+    if not prefix:
+        return suffix or ""
+    if not suffix:
+        return prefix
+    if prefix[-1].isspace() or suffix[0].isspace():
+        return prefix + suffix
+    return f"{prefix} {suffix}"
 
 
 def _query_openroute_for_chapters(

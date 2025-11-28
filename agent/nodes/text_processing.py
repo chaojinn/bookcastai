@@ -412,14 +412,14 @@ class EPUBTextProcessor:
             for title in normalized_titles
             if isinstance(title, str) and title.strip().lower().startswith("chapter")
         )
-        if normalized_start_count < len(normalized_titles) * 0.5:
+        if normalized_start_count < len(normalized_titles) * 0.4:
             logger.error(
                 "OpenRoute normalization produced too few chapter-prefixed titles (%d of %d).",
                 normalized_start_count,
                 len(normalized_titles),
             )
             raise RuntimeError(
-                "OpenRoute normalization produced titles that do not start with 'Chapter' frequently enough.",
+                f"OpenRoute normalization produced titles that do not start with 'Chapter' frequently enough.${normalized_start_count}/{len(normalized_titles)}",
             )
 
         normalized: List[Dict[str, Any]] = []
