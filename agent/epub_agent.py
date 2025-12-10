@@ -110,10 +110,10 @@ def _build_graph(
     graph.add_node("chunk_chapter_content", chunk_chapter_content)
     graph.add_node("assemble_payload", assemble_payload)
 
-    graph.add_edge("__start__", "fetch_table_of_contents")
+    graph.add_edge("__start__", "fetch_metadata")
+    graph.add_edge("fetch_metadata", "fetch_table_of_contents")
     graph.add_edge("fetch_table_of_contents", "fetch_chapter_content")
-    graph.add_edge("fetch_chapter_content", "fetch_metadata")
-    graph.add_edge("fetch_metadata", "construct_book_structure")
+    graph.add_edge("fetch_chapter_content", "construct_book_structure")
     graph.add_edge("construct_book_structure", "normalize_titles")
     graph.add_edge("normalize_titles", "normalize_first_sentence")
     graph.add_edge("normalize_first_sentence", "chunk_chapter_content")

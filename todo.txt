@@ -1,1 +1,4 @@
 1. fix roman numbers(partially, James II = 2nd not 2)
+2. add unit testing
+3. alternative tts
+4. add a web pod player
