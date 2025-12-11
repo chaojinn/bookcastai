@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Podcast Feed Generator</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha512-..." crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" integrity="sha384-..." crossorigin="anonymous">
+  <link rel="stylesheet" href="/css/index.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="title">Podcast Feed Generator</h1>
+    <div class="actions">
+      <button class="icon-btn accent" id="logoff-btn" aria-label="Log off">
+        <i class="fa-solid fa-right-from-bracket"></i><span>Log off</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="frame-wrap">
+    <iframe id="content-frame" src="" title="Content"></iframe>
+  </div>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active menu-link" data-target="/library.html" aria-label="Library">
+      <i class="fa-solid fa-book"></i><span>Library</span>
+    </button>
+    <button class="nav-btn menu-link" data-target="/queue.html" aria-label="Queue">
+      <i class="fa-solid fa-list-ol"></i><span>Queue</span>
+    </button>
+    <button class="nav-btn menu-link" data-target="/player.html" aria-label="Player">
+      <i class="fa-solid fa-circle-play"></i><span>Player</span>
+    </button>
+  </nav>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-..." crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-..." crossorigin="anonymous"></script>
+  <script>
+    const frame = document.getElementById('content-frame');
+
+    document.querySelectorAll('.menu-link').forEach((link) => {
+      link.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        const target = link.getAttribute('data-target');
+        frame.src = target || '';
+        document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+        if (link.classList.contains('nav-btn')) {
+          link.classList.add('active');
+        }
+      });
+    });
+
+    const logoffBtn = document.getElementById('logoff-btn');
+    logoffBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/logoff', {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (res.ok) {
+          window.location.href = '/login.html';
+        } else {
+          alert('Failed to log off. Please try again.');
+        }
+      } catch (err) {
+        alert('Network error. Please try again.');
+      }
+    });
+  </script>
+</body>
+</html>

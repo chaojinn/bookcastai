@@ -15,3 +15,9 @@ ebooklib
 langgraph 
 nltk>=3.8.1
 language_tool_python>=2.7.0
+starlette>=0.37.2
+uvicorn>=0.30.0
+fastapi>=0.115.0
+supertokens-python>=0.19.0
+pydantic
+email-validator

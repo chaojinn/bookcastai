@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Register</title>
+  <link rel="stylesheet" href="/css/auth.css">
+</head>
+<body>
+  <div class="auth-card">
+    <h1>Create Account</h1>
+    <form id="register-form">
+      <label>Email</label>
+      <input type="email" name="email" placeholder="you@example.com" required>
+      <label>Password</label>
+      <input type="password" name="password" placeholder="Choose a strong password" required>
+      <button type="submit">Register</button>
+      <p class="helper">Already have an account? <a href="/login.html">Log in</a></p>
+      <p id="message" class="message" role="status"></p>
+    </form>
+  </div>
+  <script>
+    const form = document.getElementById('register-form');
+    const message = document.getElementById('message');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      message.textContent = '';
+      const formData = new FormData(form);
+      const payload = {
+        email: formData.get('email'),
+        password: formData.get('password'),
+      };
+      try {
+        const res = await fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          window.location.href = '/login.html';
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        message.textContent = data.detail || 'Registration failed';
+      } catch (error) {
+        message.textContent = 'Network error. Please try again.';
+      }
+    });
+  </script>
+</body>
+</html>

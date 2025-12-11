@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: supertokens_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: asjkdfhkjasdfhjk883938askjfh
+      POSTGRES_DB: supertokens_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - bookcastai_postgres_data:/var/lib/postgresql/data
+
+  supertokens:
+    image: supertokens/supertokens-postgresql
+    container_name: supertokens_core
+    restart: unless-stopped
+    environment:
+      POSTGRESQL_CONNECTION_URI: "postgresql://admin:asjkdfhkjasdfhjk883938askjfh@postgres:5432/supertokens_db"
+      API_KEYS: "lkssdklfjsljf-wiodjdskjfh-skjasdfkj-kshjsdhdhhd"
+    ports:
+      - "3567:3567"
+    depends_on:
+      - postgres
+
+volumes:
+  bookcastai_postgres_data:
