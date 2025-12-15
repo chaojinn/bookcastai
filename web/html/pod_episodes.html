@@ -52,6 +52,21 @@
         statusEl.style.color = isError ? '#842029' : '#4b5675';
       }
 
+      async function recordLocation() {
+        console.log("recordLocation for pod_episodes");
+        const uri = `${window.location.pathname}${window.location.search}`;
+        try {
+          await fetch('/api/last_location', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uri })
+          });
+        } catch (err) {
+          console.warn('Failed to record last location', err);
+        }
+      }
+
       async function loadPod() {
         if (!podId) {
           showStatus('Missing pod_id in URL.', true);
@@ -85,7 +100,9 @@
                 <button type="button" class="btn btn-sm btn-outline-primary">
                   <i class="fa-solid fa-play"></i> Play
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-secondary">
+                <button type="button"
+                        class="btn btn-sm btn-outline-secondary btn-add-queue"
+                        data-episode-idx="${ep.index || ''}">
                   <i class="fa-solid fa-list-ul"></i> Add to queue
                 </button>
               </div>
@@ -115,7 +132,43 @@
         }
       }
 
-      window.addEventListener('DOMContentLoaded', loadPod);
+      async function addToQueue(episodeIdx) {
+        if (!episodeIdx) {
+          showStatus('Cannot add episode without an index.', true);
+          return;
+        }
+        try {
+          const res = await fetch('/api/queue', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pod_id: podId,
+              episode_idx: Number(episodeIdx),
+              start_pos: 0
+            })
+          });
+          if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+          const data = await res.json();
+          if (!data.added) {
+            showStatus('Episode is already in your queue.', false);
+          } else {
+            statusEl.style.display = 'none';
+          }
+        } catch (err) {
+          showStatus('Failed to add to queue.', true);
+          console.error(err);
+        }
+      }
+
+      window.addEventListener('DOMContentLoaded', () => {
+        recordLocation();
+        loadPod();
+        $('#episodes-table').on('click', '.btn-add-queue', function () {
+          const idx = this.getAttribute('data-episode-idx');
+          addToQueue(idx);
+        });
+      });
     })();
   </script>
 </body>

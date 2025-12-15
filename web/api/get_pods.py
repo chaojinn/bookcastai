@@ -32,7 +32,7 @@ router = APIRouter()
 
 
 def _parse_pod_file(path: Path) -> Optional[PodInfo]:
-    pod_id = path.name
+    pod_id = path.parent.name
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError as exc:

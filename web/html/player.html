@@ -8,5 +8,21 @@
 <body>
   <h2>Player</h2>
   <p>This page will host the player UI.</p>
+  <script>
+    async function recordLocation() {
+      const uri = `${window.location.pathname}${window.location.search}`;
+      try {
+        await fetch('/api/last_location', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uri })
+        });
+      } catch (err) {
+        console.warn('Failed to record last location', err);
+      }
+    }
+    window.addEventListener('DOMContentLoaded', recordLocation);
+  </script>
 </body>
 </html>

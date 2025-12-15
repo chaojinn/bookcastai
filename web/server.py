@@ -22,6 +22,7 @@ from .api.register import router as register_router
 from .api.logoff import router as logoff_router
 from .api.get_pods import router as get_pods_router
 from .api.last_location import router as last_location_router
+from .api.queue import router as queue_router
 
 
 def _load_env() -> None:
@@ -95,6 +96,7 @@ def _build_app() -> FastAPI:
     app.include_router(logoff_router)
     app.include_router(get_pods_router)
     app.include_router(last_location_router)
+    app.include_router(queue_router)
 
     base_dir = Path(__file__).resolve().parent
     html_dir = base_dir / "html"
@@ -158,33 +160,6 @@ def _build_app() -> FastAPI:
 
         return await call_next(request)
 
-    @app.middleware("http")
-    async def _record_last_location(request, call_next):  # type: ignore[unused-arg]
-        response = await call_next(request)
-        try:
-            if (
-                request.method == "GET"
-                and request.url.path.endswith(".html")
-                and not request.url.path.endswith("/index.html")
-                and response.status_code < 400
-            ):
-                session_container = await get_session(
-                    request,
-                    session_required=False,
-                    anti_csrf_check=False,
-                )
-                if session_container is not None:
-                    try:
-                        uri = request.url.path
-                        if request.url.query:
-                            uri = f"{uri}?{request.url.query}"
-                        request.app.state.pgdb.update_last_location(session_container.get_user_id(), uri)
-                    except Exception:
-                        # Best-effort: do not block the response if logging fails.
-                        pass
-        except TryRefreshTokenError:
-            pass
-        return response
 
     app.mount("/css", StaticFiles(directory=css_dir), name="css")
     app.mount("/js", StaticFiles(directory=js_dir), name="js")

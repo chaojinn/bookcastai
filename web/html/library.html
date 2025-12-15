@@ -16,6 +16,20 @@
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"  crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"  crossorigin="anonymous"></script>
   <script>
+    async function recordLocation() {
+      const uri = `${window.location.pathname}${window.location.search}`;
+      try {
+        await fetch('/api/last_location', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uri })
+        });
+      } catch (err) {
+        console.warn('Failed to record last location', err);
+      }
+    }
+
     async function loadPods() {
       const grid = document.getElementById('pod-grid');
       const empty = document.getElementById('empty-state');
@@ -29,6 +43,7 @@
           empty.style.display = 'block';
           return;
         }
+        console.log(pods);
         pods.forEach(pod => {
           const card = document.createElement('div');
           card.className = 'card';
@@ -49,7 +64,10 @@
       }
     }
 
-    window.addEventListener('DOMContentLoaded', loadPods);
+    window.addEventListener('DOMContentLoaded', () => {
+      recordLocation();
+      loadPods();
+    });
   </script>
 </body>
 </html>
