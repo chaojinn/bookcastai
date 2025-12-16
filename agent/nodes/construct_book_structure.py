@@ -1,3 +1,19 @@
+"""
+Node: construct_book_structure
+Input state (EPUBAgentState keys used):
+  - chapters: list[dict] with chapter_number (int), chapter_title (str), content_text (str)
+  - preview_path: optional path (str/Path-like) where a preview JSON should be written
+  - errors: optional list[str] to append to when preview write fails
+Process:
+  - Merge untitled chapters into the next titled one, renumber sequentially.
+  - If preview_path is provided, write a preview JSON of chapter metadata (first 200 chars/length).
+  - Query OpenRouter (with caching) to decide which chapter numbers to keep; renumber kept chapters.
+  - If OpenRouter fails or returns nothing usable, fall back to the merged chapter list.
+Output state:
+  - chapters: merged (and possibly filtered) list with sequential chapter_number
+  - errors: appended with preview write errors, if any
+"""
+
 from __future__ import annotations
 
 import hashlib

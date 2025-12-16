@@ -1,28 +1,340 @@
+<!--
+use jquery and bootstrap from cdn
+use GET /api/queue to get all queued episodes when page loaded
+create a player UI, set player source to first episode in queue, set starting position to start_pos of first episode, do not auto start play when page loaded
+when first episode is played, remove it from queue and start playing next episode from it's start_pos until queue is empty
+don't remove this comment after generating code
+-->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Player</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous">
+  <link rel="stylesheet" href="/css/player.css">
 </head>
 <body>
-  <h2>Player</h2>
-  <p>This page will host the player UI.</p>
+  <div class="page-shell">
+    <div class="header">
+      <div>
+        <h2 id="page-title">Loading Title...</h2>
+        <p id="page-subtitle" class="text-muted mb-0"></p>
+      </div>
+    </div>
+
+    <div id="status" class="status-bar"></div>
+
+    <div class="player-card">
+      <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 now-playing">
+        <div>
+          <div class="label">Now Playing</div>
+          <h5 id="now-title" class="fw-semibold mb-1">Nothing queued</h5>
+          <div class="text-muted" id="now-subtitle">Add an episode to get started.</div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          <span class="pill" id="now-podcast">--</span>
+          <span class="pill" id="now-start">Start at 0:00</span>
+        </div>
+      </div>
+
+      <div class="mt-3">
+        <audio id="audio-player" controls class="w-100" preload="auto"></audio>
+      </div>
+
+      <div class="d-flex player-controls justify-content-between align-items-center mt-3 gap-2">
+        <div class="text-muted" id="queue-count">Queue empty.</div>
+        <div class="d-flex gap-2">
+          <button class="btn btn-outline-secondary btn-sm" id="restart-btn" disabled>
+            <i class="fa-solid fa-rotate-left"></i> Restart
+          </button>
+          <button class="btn btn-outline-primary btn-sm" id="next-btn" disabled>
+            Next <i class="fa-solid fa-forward ms-1"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="queue-card">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <button class="btn btn-link text-decoration-none collapse-toggle w-100 text-start" type="button"
+                data-bs-toggle="collapse" data-bs-target="#queue-collapse"
+                aria-expanded="false" aria-controls="queue-collapse">
+          <span class="fw-semibold">Play List</span>
+          <i class="fa-solid fa-chevron-down ms-1" id="playlist-chevron"></i>
+        </button>
+      </div>
+      <div class="collapse" id="queue-collapse">
+        <ul class="list-group queue-list" id="queue-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
   <script>
-    async function recordLocation() {
-      const uri = `${window.location.pathname}${window.location.search}`;
-      try {
-        await fetch('/api/last_location', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uri })
-        });
-      } catch (err) {
-        console.warn('Failed to record last location', err);
+    (() => {
+      const statusEl = document.getElementById('status');
+      const pageTitleEl = document.getElementById('page-title');
+      const pageSubtitleEl = document.getElementById('page-subtitle');
+      const audioEl = document.getElementById('audio-player');
+      const queueListEl = document.getElementById('queue-list');
+      const queueCountEl = document.getElementById('queue-count');
+      const nextBtn = document.getElementById('next-btn');
+      const restartBtn = document.getElementById('restart-btn');
+      const playlistChevron = document.getElementById('playlist-chevron');
+      const playlistCollapseEl = document.getElementById('queue-collapse');
+
+      const nowTitleEl = document.getElementById('now-title');
+      const nowSubtitleEl = document.getElementById('now-subtitle');
+      const nowPodcastEl = document.getElementById('now-podcast');
+      const nowStartEl = document.getElementById('now-start');
+
+      let queue = [];
+      let pods = [];
+      let currentItem = null;
+      let seekingTo = 0;
+      let shouldAutoplay = false;
+      let advancing = false;
+
+      function showStatus(message, variant = 'info') {
+        if (!message) {
+          statusEl.style.display = 'none';
+          return;
+        }
+        statusEl.style.display = 'block';
+        statusEl.textContent = message;
+        const colors = {
+          info: ['#e1e6f0', '#fff', '#334155'],
+          success: ['#d1e7dd', '#f6fffb', '#0f5132'],
+          warning: ['#ffeeba', '#fffdf4', '#664d03'],
+          danger: ['#f5c2c7', '#fff5f5', '#842029'],
+          muted: ['#e1e6f0', '#fff', '#6c757d']
+        };
+        const [border, bg, text] = colors[variant] || colors.info;
+        statusEl.style.borderColor = border;
+        statusEl.style.background = bg;
+        statusEl.style.color = text;
       }
-    }
-    window.addEventListener('DOMContentLoaded', recordLocation);
+
+      async function recordLocation() {
+        const uri = `${window.location.pathname}${window.location.search}`;
+        try {
+          await fetch('/api/last_location', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uri })
+          });
+        } catch (err) {
+          console.warn('Failed to record last location', err);
+        }
+      }
+
+      function formatSeconds(seconds) {
+        if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      }
+
+      function findEpisode(item) {
+        if (!item) return null;
+        const pod = pods.find(p => p.id === item.pod_id);
+        if (!pod) return null;
+        const matchByIdx = pod.episodes.find(ep => `${ep.index}` === `${item.episode_idx}`);
+        const fallbackByPosition = pod.episodes[item.episode_idx] || null;
+        const episode = matchByIdx || fallbackByPosition;
+        if (!episode) return null;
+        return {
+          title: episode.title || `Episode ${item.episode_idx}`,
+          audioUrl: episode.audio_url,
+          podTitle: pod.title || item.pod_id
+        };
+      }
+
+      function renderQueue() {
+        queueListEl.innerHTML = '';
+        if (!queue.length) {
+          queueListEl.innerHTML = '<li class="list-group-item text-muted">Your queue is empty.</li>';
+          queueCountEl.textContent = 'Queue empty.';
+          nextBtn.disabled = true;
+          restartBtn.disabled = true;
+          return;
+        }
+
+        queueCountEl.textContent = `${queue.length} in queue`;
+        nextBtn.disabled = queue.length <= 1;
+        restartBtn.disabled = false;
+
+        queue.forEach((item, idx) => {
+          const ep = findEpisode(item);
+          const title = ep?.title || `Episode ${item.episode_idx}`;
+          const podTitle = ep?.podTitle || item.pod_id;
+          const li = document.createElement('li');
+          li.className = 'list-group-item d-flex justify-content-between align-items-start';
+          li.innerHTML = `
+            <div>
+              <div class="fw-semibold">${idx === 0 ? '<span class="badge bg-primary me-1">Playing</span>' : ''}${title}</div>
+              <div class="text-muted small">${podTitle} - Start at ${formatSeconds(Number(item.start_pos) || 0)}</div>
+            </div>
+            <span class="badge bg-light text-secondary rounded-pill">${item.idx}</span>
+          `;
+          queueListEl.appendChild(li);
+        });
+      }
+      function updateNowPlaying() {
+        if (!currentItem) {
+          nowTitleEl.textContent = 'Nothing queued';
+          nowSubtitleEl.textContent = 'Add an episode to get started.';
+          nowPodcastEl.textContent = '--';
+          nowStartEl.textContent = 'Start at 0:00';
+          audioEl.removeAttribute('src');
+          return;
+        }
+        const ep = findEpisode(currentItem);
+        const title = ep?.title || `Episode ${currentItem.episode_idx}`;
+        const podTitle = ep?.podTitle || currentItem.pod_id;
+        if (pageTitleEl) {
+          pageTitleEl.textContent = podTitle || 'Player';
+        }
+        document.title = podTitle || 'Player';
+        if (pageSubtitleEl) {
+          pageSubtitleEl.textContent = currentItem ? 'Playing queued episodes' : '';
+        }
+        nowTitleEl.textContent = title;
+        nowSubtitleEl.textContent = `Episode ${currentItem.episode_idx}`;
+        nowPodcastEl.textContent = podTitle;
+        nowStartEl.textContent = `Start at ${formatSeconds(Number(currentItem.start_pos) || 0)}`;
+      }
+
+      function setSourceForCurrent(autoplay = false) {
+        if (!currentItem) {
+          audioEl.pause();
+          audioEl.removeAttribute('src');
+          return;
+        }
+        const ep = findEpisode(currentItem);
+        if (!ep?.audioUrl) {
+          showStatus('Audio URL missing for this episode.', 'danger');
+          return;
+        }
+        seekingTo = Number(currentItem.start_pos) || 0;
+        shouldAutoplay = autoplay;
+        audioEl.src = ep.audioUrl;
+        audioEl.load();
+      }
+
+      async function loadPods() {
+        const res = await fetch('/api/get_pods', { credentials: 'include' });
+        if (!res.ok) throw new Error(`Failed pods request: ${res.status}`);
+        pods = await res.json();
+      }
+
+      async function loadQueue() {
+        const res = await fetch('/api/queue', { credentials: 'include' });
+        if (!res.ok) throw new Error(`Failed queue request: ${res.status}`);
+        queue = await res.json();
+        renderQueue();
+        if (queue.length) {
+          currentItem = queue[0];
+        } else {
+          currentItem = null;
+        }
+        updateNowPlaying();
+      }
+
+      async function deleteFromQueue(idx) {
+        const res = await fetch(`/api/queue/${idx}`, {
+          method: 'DELETE',
+          credentials: 'include'
+        });
+        if (!res.ok) throw new Error(`Failed to delete item ${idx}`);
+        return res.json();
+      }
+
+      async function advanceToNext({ removeCurrent = false, autoplay = true } = {}) {
+        if (advancing) return;
+        advancing = true;
+        try {
+          if (removeCurrent && currentItem) {
+            await deleteFromQueue(currentItem.idx);
+          }
+          await loadQueue();
+          if (queue.length) {
+            currentItem = queue[0];
+            updateNowPlaying();
+            setSourceForCurrent(autoplay);
+          } else {
+            currentItem = null;
+            updateNowPlaying();
+            showStatus('Queue finished.', 'success');
+          }
+        } catch (err) {
+          console.error(err);
+          showStatus('Failed to advance queue.', 'danger');
+        } finally {
+          advancing = false;
+        }
+      }
+
+      async function initPage() {
+        showStatus('Loading queue...');
+        try {
+          await loadPods();
+          await loadQueue();
+          setSourceForCurrent(false);
+          showStatus(queue.length ? 'Ready to play.' : 'Queue is empty.', queue.length ? 'success' : 'muted');
+        } catch (err) {
+          console.error(err);
+          showStatus('Failed to load player data.', 'danger');
+        }
+      }
+
+      audioEl.addEventListener('loadedmetadata', () => {
+        if (seekingTo && Number.isFinite(seekingTo) && seekingTo > 0) {
+          const seekTime = Math.min(seekingTo, audioEl.duration || seekingTo);
+          audioEl.currentTime = seekTime;
+        }
+        if (shouldAutoplay) {
+          audioEl.play().catch(() => {
+            showStatus('Autoplay blocked; press play to continue.', 'warning');
+          });
+        }
+        shouldAutoplay = false;
+      });
+
+      audioEl.addEventListener('ended', () => {
+        advanceToNext({ removeCurrent: true, autoplay: true });
+      });
+
+      nextBtn.addEventListener('click', () => {
+        advanceToNext({ removeCurrent: true, autoplay: true });
+      });
+
+      restartBtn.addEventListener('click', () => {
+        // No history stack to navigate; just restart current track.
+        if (!currentItem) return;
+        setSourceForCurrent(false);
+        audioEl.currentTime = 0;
+        showStatus('Restarted current episode.', 'info');
+      });
+
+      if (playlistCollapseEl) {
+        playlistCollapseEl.addEventListener('show.bs.collapse', () => {
+          playlistChevron?.classList.add('rotate');
+        });
+        playlistCollapseEl.addEventListener('hide.bs.collapse', () => {
+          playlistChevron?.classList.remove('rotate');
+        });
+      }
+
+      window.addEventListener('DOMContentLoaded', () => {
+        recordLocation();
+        initPage();
+      });
+    })();
   </script>
 </body>
 </html>
