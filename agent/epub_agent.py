@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -45,6 +46,7 @@ else:
     )
 
 logger = logging.getLogger(__name__)
+_DATA_BASE = Path(os.getenv("PODS_BASE", "")).expanduser()
 
 class ChapterPayload(TypedDict, total=False):
     """Normalized structure for chapter content."""
@@ -224,7 +226,7 @@ def run_epub_agent(
     A preview JSON containing chapter titles and first-sentence snippets is always written to
     ``./data/{book_title}/preview.json`` before chunking.
     """
-    base_dir = Path("data") / book_title
+    base_dir = _DATA_BASE / book_title
     epub_path = base_dir / "book.epub"
     resolved_output_path = base_dir / "book.json"
     preview_path = base_dir / "preview.json"
@@ -331,7 +333,7 @@ def _cli() -> int:  # pragma: no cover - CLI helper
     logger.info(
         "EPUB agent completed for '%s'; output written to %s",
         args.book_title,
-        Path("data") / args.book_title / "book.json",
+        _DATA_BASE / args.book_title / "book.json",
     )
     return 0
 

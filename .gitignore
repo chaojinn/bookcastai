@@ -36,6 +36,7 @@ dist/
 audio/
 images/
 data/
+pod_data/
 *.log
 
 #model

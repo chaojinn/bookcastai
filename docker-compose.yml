@@ -24,5 +24,31 @@ services:
     depends_on:
       - postgres
 
+  bookcastai:
+    image: bookcastai:latest
+    container_name: bookcastai_app
+    volumes:
+      - ./pod_data:/app/data
+    environment:
+      # Supertokens
+      SESSION_SECRET: "hsjshdhd"
+      SUPERTOKENS_CORE_URL: "http://supertokens:3567"
+      SUPERTOKENS_API_KEY: "lkssdklfjsljf-wiodjdskjfh-skjasdfkj-kshjsdhdhhd"
+      SUPERTOKENS_RECIPE_ID: "emailpassword"
+      SUPERTOKENS_CDI_VERSION: 4.0
+      SUPERTOKENS_TENANT_ID: public
+      #DB
+      DB_USER: admin
+      DB_PASS: asjkdfhkjasdfhjk883938askjfh
+      DB_HOST: postgres
+      DB_NAME: supertokens_db
+      #app
+      PODS_BASE: /app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - supertokens
+      - postgres
+
 volumes:
   bookcastai_postgres_data:

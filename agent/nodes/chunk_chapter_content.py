@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
 logger.propagate = False
+_DATA_BASE = Path(os.getenv("PODS_BASE", "")).expanduser()
 
 _ABBREVIATIONS = {
     "Mr.",
@@ -313,7 +315,7 @@ def _build_sentences_payload(
 
 
 def _write_sentences_json(book_title: str, payload: Dict[str, Any]) -> None:
-    target_path = Path("data") / book_title / "sentences.json"
+    target_path = _DATA_BASE / book_title / "sentences.json"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with target_path.open("w", encoding="utf-8") as handle:
@@ -414,14 +416,14 @@ def make_chunk_chapter_content_node(
                 chapters=updated_chapters if modified else chapters,
             )
 
+        if sentences_payload:
+            _write_sentences_json(book_title, sentences_payload)
+
         if ai_enabled and book_title:
-            changes_path = Path("data") / book_title / "ai_changes.json"
+            changes_path = _DATA_BASE / book_title / "ai_changes.json"
             changes_path.parent.mkdir(parents=True, exist_ok=True)
             with changes_path.open("w", encoding="utf-8") as handle:
                 json.dump(ai_changes_log, handle, indent=2, ensure_ascii=False)
-
-        if sentences_payload:
-            _write_sentences_json(book_title, sentences_payload)
 
         return {"chapters": updated_chapters} if modified else {}
 

@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|\n+")
 _MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
-_DEFAULT_CACHE_PATH = Path("data") / "openroute_cache.json"
+_DATA_BASE = Path(os.getenv("PODS_BASE", "")).expanduser()
+_DEFAULT_CACHE_PATH = _DATA_BASE / "openroute_cache.json"
 _AI_CHUNK_PROMPT_TEMPLATE = (
     "You receive OCR text already split into sentences. Each item has an 'index' (1-based) and the current 'sentence'. \n"
     "Only fix common OCR errors ,for example, mistake I as 1, I as T etc. MUST not make other changes. Only return the sentences that require edits. \n"
