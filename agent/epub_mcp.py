@@ -488,6 +488,8 @@ class EbooklibEPUBMCPClient:
 
         raw_bytes = item.get_content()
         text = _extract_chapter_text(raw_bytes, anchor, next_anchor)
+        preview = (text or "")[:1000].replace("\n", " ").replace("\r", " ")
+        logger.debug("Extracted chapter doc_path=%s anchor=%s preview=\"%s\"", doc_path, anchor, preview)
         return {"content_text": text}
 
     def get_metadata(self, epub_path: str) -> Optional[Dict[str, Any]]:

@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
+
+from dotenv import load_dotenv
 from tts.kokoro import KokoroTTSProvider
 from tts.openai_provider import OpenAITTSProvider
 from tts.dia_provider import DiaTTSProvider
 from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
+
+load_dotenv()
 
 
 def _build_provider(
@@ -158,7 +163,8 @@ def convert_epub_to_pod(
         lang=lang,
         speed=speed,
     )
-    output_base = output_dir / provider_info["name"]
+    #output_base = output_dir / provider_info["name"]
+    output_base = output_dir / "audio"
     output_base.mkdir(parents=True, exist_ok=True)
 
     generated_files: list[Path] = []
@@ -212,7 +218,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "book_title",
-        help="Book title used to locate ./data/{book_title}/book.json and output directory.",
+        help="Book title used to locate {PODS_BASE}/{book_title}/book.json and output directory.",
     )
     parser.add_argument(
         "--voice",
@@ -254,7 +260,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
 
-    base_dir = Path("data") / args.book_title
+    pods_base = os.getenv("PODS_BASE", "data")
+    base_dir = Path(pods_base).expanduser() / args.book_title
     book_json_path = base_dir / "book.json"
 
     try:

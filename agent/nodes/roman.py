@@ -5,12 +5,6 @@ import re
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    handler = logging.FileHandler("debug.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    logger.addHandler(handler)
-logger.setLevel(logging.DEBUG)
-logger.propagate = False
 
 _ROMAN_NUMERAL_PATTERN = re.compile(
     r"(\s)(X{0,3}(?:IX|IV|V?I{0,3}))(?=[\s.?!])"

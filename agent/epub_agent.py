@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
+from dotenv import load_dotenv
+
 try:
     from langgraph.graph import END, StateGraph
 except ImportError as exc:  # pragma: no cover - import guard
@@ -14,6 +16,7 @@ except ImportError as exc:  # pragma: no cover - import guard
         "langgraph is required for the EPUB agent. Install it via 'pip install langgraph'.",
     ) from exc
 
+load_dotenv()
 if __package__ in (None, ""):
     current_dir = Path(__file__).resolve().parent
     current_str = str(current_dir)
@@ -74,6 +77,7 @@ class EPUBAgentState(TypedDict, total=False):
     preview_path: str
     ignore_classes: List[str]
     ai_extract_text: bool
+    pods_base: str
 
 
 def _build_graph(
@@ -175,6 +179,7 @@ class EPUBAgent:
             "epub_path": epub_path_str,
             "output_path": output_path_str,
             "chunk_size": self._chunk_size,
+            "pods_base": str(_DATA_BASE),
         }
         if preview_path_str:
             initial_state["preview_path"] = preview_path_str
@@ -226,6 +231,7 @@ def run_epub_agent(
     A preview JSON containing chapter titles and first-sentence snippets is always written to
     ``./data/{book_title}/preview.json`` before chunking.
     """
+    _configure_logging()
     base_dir = _DATA_BASE / book_title
     epub_path = base_dir / "book.epub"
     resolved_output_path = base_dir / "book.json"
@@ -254,7 +260,7 @@ def _configure_logging() -> None:
     formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
     handler.setFormatter(formatter)
     root_logger.addHandler(handler)
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(logging.DEBUG)
 
 
 def _parse_ignore_classes(raw_values: Optional[List[str]]) -> Optional[List[str]]:
@@ -289,8 +295,8 @@ def _create_arg_parser() -> "argparse.ArgumentParser":  # pragma: no cover - CLI
     )
     parser.add_argument(
         "--log-level",
-        default="INFO",
-        help="Logging level for the agent execution (default: INFO).",
+        default="DEBUG",
+        help="Logging level for the agent execution (default: DEBUG).",
     )
     parser.add_argument(
         "--chunk-size",

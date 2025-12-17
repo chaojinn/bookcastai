@@ -113,6 +113,13 @@ class EPUBTextProcessor:
                 if base_dir.name:
                     self._cache_path = base_dir / "openroute_cache.json"
                     return self._cache_path
+            pods_base = state.get("pods_base")
+            if isinstance(pods_base, str) and pods_base.strip():
+                try:
+                    self._cache_path = Path(pods_base).expanduser().resolve() / "openroute_cache.json"
+                except OSError:
+                    self._cache_path = Path(pods_base).expanduser() / "openroute_cache.json"
+                return self._cache_path
         self._cache_path = _DEFAULT_CACHE_PATH
         return self._cache_path
 

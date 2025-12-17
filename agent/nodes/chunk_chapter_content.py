@@ -18,12 +18,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
     from ..epub_agent import ChapterPayload, EPUBAgentState
 
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    handler = logging.FileHandler("debug.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    logger.addHandler(handler)
-logger.setLevel(logging.DEBUG)
-logger.propagate = False
 _DATA_BASE = Path(os.getenv("PODS_BASE", "")).expanduser()
 
 _ABBREVIATIONS = {
@@ -314,8 +308,19 @@ def _build_sentences_payload(
     }
 
 
-def _write_sentences_json(book_title: str, payload: Dict[str, Any]) -> None:
-    target_path = _DATA_BASE / book_title / "sentences.json"
+def _resolve_pods_base(state: "EPUBAgentState") -> Path:
+    if isinstance(state, dict):
+        raw_base = state.get("pods_base")
+        if isinstance(raw_base, str) and raw_base.strip():
+            try:
+                return Path(raw_base).expanduser().resolve()
+            except OSError:
+                return Path(raw_base).expanduser()
+    return _DATA_BASE
+
+
+def _write_sentences_json(book_title: str, payload: Dict[str, Any], pods_base: Path) -> None:
+    target_path = pods_base / book_title / "sentences.json"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with target_path.open("w", encoding="utf-8") as handle:
@@ -335,6 +340,7 @@ def make_chunk_chapter_content_node(
             return {}
 
         epub_path = state.get("epub_path")
+        pods_base = _resolve_pods_base(state)
         book_title = ""
         if isinstance(epub_path, str):
             try:
@@ -417,10 +423,10 @@ def make_chunk_chapter_content_node(
             )
 
         if sentences_payload:
-            _write_sentences_json(book_title, sentences_payload)
+            _write_sentences_json(book_title, sentences_payload, pods_base)
 
         if ai_enabled and book_title:
-            changes_path = _DATA_BASE / book_title / "ai_changes.json"
+            changes_path = pods_base / book_title / "ai_changes.json"
             changes_path.parent.mkdir(parents=True, exist_ok=True)
             with changes_path.open("w", encoding="utf-8") as handle:
                 json.dump(ai_changes_log, handle, indent=2, ensure_ascii=False)

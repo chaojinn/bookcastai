@@ -1,3 +1,9 @@
+"""
+Feed generator for chapter audio.
+Input: CLI args (book_title, optional feed overrides), .env for URLs and PODS_BASE, and locally generated assets under {PODS_BASE}/{book_title}/book.json plus audio files (e.g., {PODS_BASE}/{book_title}/audio).
+Output: RSS feed XML written to {PODS_BASE}/{book_title}/book.xml using AUDIO_URL_PREFIX/{book_title} as the public base.
+Process: load .env, read book metadata and chapter audio, build/pad summaries/covers, emit RSS with enclosures, write the XML.
+"""
 from __future__ import annotations
 
 import argparse
@@ -20,132 +26,6 @@ import xml.etree.ElementTree as ET
 from html import unescape
 
 from dotenv import load_dotenv
-
-
-def upload_feed(metadata: dict, feedFile: str, book_title: str | None = None) -> None:
-    """Upload the generated feed XML and chapter MP3 files to the remote host."""
-    # Lazy import to avoid altering module load order
-    from scp import run_scp, run_ssh  # type: ignore
-
-    load_dotenv()
-
-    remote_base = os.getenv("REMOTE_BASE")
-    if not remote_base:
-        raise RuntimeError("Environment variable REMOTE_BASE is required.")
-
-    # Determine remote host (hostname[:port])
-    remote = os.getenv("SCP_REMOTE") or os.getenv("REMOTE_HOST")
-    if not remote:
-        # Fallback: derive host from AUDIO_URL_PREFIX
-        try:
-            parsed = urllib.parse.urlparse(os.getenv(ENV_AUDIO_URL_PREFIX, ""))
-            remote = parsed.hostname or ""
-        except Exception:
-            remote = ""
-    if not remote:
-        raise RuntimeError("Remote host not set. Define SCP_REMOTE or REMOTE_HOST or set a valid AUDIO_URL_PREFIX.")
-
-    feed_path = Path(feedFile).expanduser()
-    if not feed_path.is_file():
-        raise FileNotFoundError(f"Feed file not found: {feed_path}")
-
-    # Read channel title from the generated feed XML
-    try:
-        tree = ET.parse(feed_path)
-        root = tree.getroot()
-        channel = root.find("channel") if root is not None else None
-        title_el = channel.find("title") if channel is not None else None
-        channel_title = (title_el.text or "").strip() if title_el is not None else ""
-    except Exception as exc:
-        raise RuntimeError(f"Failed to parse feed file '{feedFile}': {exc}")
-
-    if not channel_title:
-        # Fallback to metadata title if channel title missing
-        channel_title = (metadata.get("title") or "").strip()
-    if not channel_title:
-        raise RuntimeError("Channel title not found in feed or metadata.")
-
-    # Prefer the CLI-supplied book title for deriving the remote directory
-    cli_title = (book_title or "").strip()
-    safe_title_source = cli_title or channel_title
-    safe_title = re.sub(r"\s+", "_", safe_title_source).strip("_") or "feed"
-    safe_title = safe_title.lower()
-    remote_dir = f"{remote_base.rstrip('/')}/{safe_title}"
-
-    # Create directory on remote (use -p to create parents if needed)
-    # Quote the path to handle special characters safely
-    cmd = f"mkdir -p '{remote_dir}'"
-    run_ssh(remote, cmd)
-
-    # Determine where MP3 files live locally
-    audio_dir_value = (
-        metadata.get("audio_dir")
-        or metadata.get("audio_directory")
-        or metadata.get("audio_path")
-        or metadata.get("audio_base")
-        or metadata.get("audio_output_dir")
-    )
-    if not audio_dir_value:
-        raise RuntimeError(
-            "Audio directory not supplied. Set metadata['audio_dir'] (or audio_directory/audio_path/audio_base/audio_output_dir)."
-        )
-
-    audio_base_dir = Path(str(audio_dir_value)).expanduser()
-    if not audio_base_dir.exists():
-        raise FileNotFoundError(f"Audio directory not found: {audio_base_dir}")
-    if not audio_base_dir.is_dir():
-        raise NotADirectoryError(f"Audio directory path is not a directory: {audio_base_dir}")
-
-    candidate_dir: Path | None = None
-    direct_match = audio_base_dir / safe_title
-    if direct_match.is_dir():
-        candidate_dir = direct_match
-    elif audio_base_dir.name.lower() == safe_title.lower():
-        candidate_dir = audio_base_dir
-    elif any(audio_base_dir.glob("*.mp3")):
-        candidate_dir = audio_base_dir
-    else:
-        try:
-            for entry in audio_base_dir.iterdir():
-                if entry.is_dir() and entry.name.lower() == safe_title.lower():
-                    candidate_dir = entry
-                    break
-        except PermissionError as exc:  # pragma: no cover - filesystem dependent
-            raise RuntimeError(f"Unable to inspect audio directory '{audio_base_dir}': {exc}") from exc
-
-    if candidate_dir is None:
-        raise FileNotFoundError(
-            f"Audio directory for '{channel_title}' not found under {audio_base_dir}. Expected folder '{safe_title}'."
-        )
-
-    mp3_files = sorted(path for path in candidate_dir.rglob("*.mp3") if path.is_file())
-    if not mp3_files:
-        raise FileNotFoundError(f"No MP3 files found in {candidate_dir}.")
-
-    # Upload feed XML
-    run_scp(feed_path, f"{remote_dir}/feed.xml", remote)
-
-    # Upload cover image if present
-    cover_filename = metadata.get("cover_image_file")
-    cover_path: Path | None = None
-    if cover_filename:
-        potential = candidate_dir / cover_filename
-        if potential.is_file():
-            cover_path = potential
-    if cover_path is None:
-        fallback = candidate_dir / "cover.jpg"
-        if fallback.is_file():
-            cover_path = fallback
-        else:
-            alternatives = sorted(candidate_dir.glob("cover.*"))
-            if alternatives:
-                cover_path = alternatives[0]
-    if cover_path is not None and cover_path.is_file():
-        run_scp(cover_path, f"{remote_dir}/{cover_path.name}", remote)
-
-    # Upload each MP3 into the channel directory
-    for mp3_file in mp3_files:
-        run_scp(mp3_file, f"{remote_dir}/{mp3_file.name}", remote)
 
 
 def generate_cover(feed_xml: str, output_image: str) -> None:
@@ -358,6 +238,7 @@ ET.register_namespace("atom", ATOM_NS)
 ENV_AUDIO_URL_PREFIX = "AUDIO_URL_PREFIX"
 ENV_OLLAMA_API_URL = "OLLAMA_API_URL"
 OLLAMA_MODEL = "gemma:7b"
+ENV_PODS_BASE = "PODS_BASE"
 
 try:
     from mutagen import File as MutagenFile
@@ -519,10 +400,7 @@ def _build_item(
     file_size = file_path.stat().st_size
     if audio_base_url:
         base = audio_base_url.rstrip("/")
-        title_slug = _slugify(book_title or "")
-        if not title_slug:
-            title_slug = "book"
-        url = f"{base}/{quote(title_slug.lower())}/{quote(filename)}"
+        url = f"{base}/{quote(filename)}"
     else:
         url = file_path.resolve().as_uri()
 
@@ -573,6 +451,7 @@ def build_feed(
     book_title:str,
     audio_dir: Path,
     *,
+    media_base_url: str | None,
     audio_base_url: str | None,
     feed_title: str | None,
     feed_description: str | None,
@@ -603,9 +482,6 @@ def build_feed(
     now = dt.datetime.now(dt.timezone.utc)
     channel_pub_date = _as_pubdate(pub_date, now)
     base_pub_date = pub_date or now
-    safe_title = re.sub(r"\s+", "_", channel_title).strip("_") or "feed"
-    safe_title = safe_title.lower()
-    safe_title = book_title
     rss = ET.Element("rss", attrib={"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
     ET.SubElement(channel, "title").text = channel_title
@@ -617,10 +493,10 @@ def build_feed(
     ET.SubElement(channel, f"{{{ITUNES_NS}}}summary").text = description
     ET.SubElement(channel, f"{{{ITUNES_NS}}}explicit").text = "yes" if explicit else "no"
 
-    if site_url or audio_base_url:
-        ET.SubElement(channel, "link").text = site_url or audio_base_url
+    if site_url or media_base_url:
+        ET.SubElement(channel, "link").text = site_url or media_base_url
         atom_self = ET.SubElement(channel, f"{{{ATOM_NS}}}link")
-        atom_self.set("href", site_url or audio_base_url or "")
+        atom_self.set("href", site_url or media_base_url or "")
         atom_self.set("rel", "self")
         atom_self.set("type", "application/rss+xml")
 
@@ -631,7 +507,7 @@ def build_feed(
     metadata_cover_type = metadata.get("cover_image_media_type")
 
     if metadata_cover_b64 and metadata_cover_type:
-        cover_dir = audio_dir
+        cover_dir = audio_dir.parent if audio_dir.parent != audio_dir else audio_dir
         cover_dir.mkdir(parents=True, exist_ok=True)
         media_type_lower = str(metadata_cover_type).lower()
         extension = {
@@ -663,13 +539,13 @@ def build_feed(
         else:
             cover_written = True
             metadata["cover_image_file"] = cover_filename
-            if audio_base_url:
-                cover_image_url = f"{audio_base_url.rstrip('/')}/{safe_title}/{cover_filename}"
+            if media_base_url:
+                cover_image_url = f"{media_base_url.rstrip('/')}/cover{extension}"
             else:
                 cover_image_url = cover_path.resolve().as_uri()
 
-    if not cover_written and audio_base_url:
-        cover_dir = audio_dir
+    if not cover_written and media_base_url:
+        cover_dir = audio_dir.parent if audio_dir.parent != audio_dir else audio_dir
         cover_dir.mkdir(parents=True, exist_ok=True)
         cover_filename = "cover.jpg"
         cover_path = cover_dir / cover_filename
@@ -687,13 +563,13 @@ def build_feed(
                 except OSError:
                     pass
         metadata["cover_image_file"] = cover_filename
-        cover_image_url = f"{audio_base_url.rstrip('/')}/{safe_title}/{cover_filename}"
+        cover_image_url = f"{media_base_url.rstrip('/')}/{cover_filename}"
 
     if cover_image_url:
         image = ET.SubElement(channel, "image")
         ET.SubElement(image, "url").text = cover_image_url
         ET.SubElement(image, "title").text = channel_title
-        ET.SubElement(image, "link").text = site_url or audio_base_url or ""
+        ET.SubElement(image, "link").text = site_url or media_base_url or ""
         ET.SubElement(channel, f"{{{ITUNES_NS}}}image").set("href", cover_image_url)
 
     chapters = metadata.get("chapters") or []
@@ -748,10 +624,11 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = parse_args(argv)
 
-    base_dir = Path("data") / args.book_title
+    pods_base = os.getenv(ENV_PODS_BASE, "data")
+    base_dir = Path(pods_base).expanduser() / args.book_title
     metadata_path = base_dir / "book.json"
     output_path = base_dir / "book.xml"
-    audio_dir = base_dir / "kokoro"
+    audio_dir = base_dir / "audio"
 
     if not metadata_path.is_file():
         raise FileNotFoundError(f"Metadata JSON not found: {metadata_path}")
@@ -774,16 +651,20 @@ def main(argv: list[str] | None = None) -> int:
 
     metadata["audio_dir"] = str(audio_dir)
 
+    media_base_url = f"{audio_url_prefix.rstrip('/')}/{args.book_title}"
+    audio_base_url = f"{media_base_url}/audio"
+
     feed = build_feed(
         metadata,
         args.book_title,
         audio_dir,
-        audio_base_url=audio_url_prefix,
+        media_base_url=media_base_url,
+        audio_base_url=audio_base_url,
         feed_title=args.feed_title,
         feed_description=args.feed_description,
         feed_language=args.feed_language,
         author_override=args.author,
-        site_url=args.site_url or audio_url_prefix,
+        site_url=args.site_url or media_base_url,
         image_url=args.image,
         explicit=args.explicit,
         ollama_api_url=ollama_api_url,
@@ -793,8 +674,6 @@ def main(argv: list[str] | None = None) -> int:
     _indent(feed.getroot())
     feed.write(output_path, encoding="utf-8", xml_declaration=True)
     print(f"Generated RSS feed at {output_path}")
-
-    upload_feed(metadata, str(output_path), book_title=args.book_title)
 
     return 0
 

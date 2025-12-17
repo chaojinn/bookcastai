@@ -5,9 +5,9 @@ Input state (EPUBAgentState keys used):
   - preview_path: optional path (str/Path-like) where a preview JSON should be written
   - errors: optional list[str] to append to when preview write fails
 Process:
-  - Merge untitled chapters into the next titled one, renumber sequentially.
   - If preview_path is provided, write a preview JSON of chapter metadata (first 200 chars/length).
   - Query OpenRouter (with caching) to decide which chapter numbers to keep; renumber kept chapters.
+  - Merge untitled chapters into the next titled one, renumber sequentially.
   - If OpenRouter fails or returns nothing usable, fall back to the merged chapter list.
 Output state:
   - chapters: merged (and possibly filtered) list with sequential chapter_number
@@ -35,12 +35,13 @@ _MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
 
 def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAgentState"]:
     def construct_book_structure(state: "EPUBAgentState") -> "EPUBAgentState":
-        chapters = _merge_untitled_chapters(state.get("chapters", []))
+        original_chapters = state.get("chapters", [])
         preview_path_value = state.get("preview_path")
         if not preview_path_value:
-            return {"chapters": chapters}
+            merged = _merge_untitled_chapters(original_chapters)
+            return {"chapters": merged}
         preview_items: List[dict[str, str | int]] = []
-        for chapter in chapters:
+        for chapter in original_chapters:
             if not isinstance(chapter, dict):
                 continue
             chapter_number = chapter.get("chapter_number") if isinstance(chapter.get("chapter_number"), int) else None
@@ -63,24 +64,27 @@ def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAg
         except OSError as exc:
             errors = list(state.get("errors", []))
             errors.append(f"Failed to write preview JSON: {exc}")
-            return {"chapters": chapters, "errors": errors}
+            merged = _merge_untitled_chapters(original_chapters)
+            return {"chapters": merged, "errors": errors}
 
         cache_path = preview_path.parent / "openroute_cache.json"
         selected_numbers = _query_openroute_for_chapters(preview_items, cache_path=cache_path)
         if selected_numbers:
-            updated_chapters = [
+            filtered_chapters = [
                 chapter
-                for chapter in chapters
+                for chapter in original_chapters
                 if isinstance(chapter, dict)
                 and isinstance(chapter.get("chapter_number"), int)
                 and chapter["chapter_number"] in selected_numbers
             ]
-            if updated_chapters:
-                for index, chapter in enumerate(updated_chapters, start=1):
+            if filtered_chapters:
+                for index, chapter in enumerate(filtered_chapters, start=1):
                     chapter["chapter_number"] = index
-                return {"chapters": updated_chapters}
+                merged = _merge_untitled_chapters(filtered_chapters)
+                return {"chapters": merged}
             logger.warning("OpenRoute selection returned numbers not matching any chapter.")
-        return {"chapters": chapters}
+        merged = _merge_untitled_chapters(original_chapters)
+        return {"chapters": merged}
 
     return construct_book_structure
 
@@ -94,6 +98,7 @@ def _merge_untitled_chapters(chapters: Sequence[dict[str, object]]) -> List[dict
 
     merged: List[dict[str, object]] = []
     carry_content = ""
+    carry_from: dict[str, object] | None = None
     for chapter in chapters:
         if not isinstance(chapter, dict):
             continue
@@ -104,12 +109,23 @@ def _merge_untitled_chapters(chapters: Sequence[dict[str, object]]) -> List[dict
 
         if not normalized_title.strip():
             carry_content = _merge_text_with_space(carry_content, content)
+            carry_from = chapter
             continue
 
         merged_content = content
         if carry_content:
             merged_content = _merge_text_with_space(carry_content, merged_content)
+            src_number = carry_from.get("chapter_number") if isinstance(carry_from, dict) else None
+            src_preview = (carry_content or "")[:200]
+            tgt_number = chapter.get("chapter_number") if isinstance(chapter.get("chapter_number"), int) else None
+            logger.debug(
+                "Merging untitled chapter %s into chapter %s: preview='%s'",
+                src_number,
+                tgt_number,
+                src_preview,
+            )
             carry_content = ""
+            carry_from = None
 
         new_chapter = dict(chapter)
         new_chapter["chapter_title"] = normalized_title
