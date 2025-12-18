@@ -97,6 +97,9 @@ don't remove this comment after generating code
       let seekingTo = 0;
       let shouldAutoplay = false;
       let advancing = false;
+      let lastSyncedStartPos = 0;
+      let lastStartPosSyncAt = 0;
+      const START_POS_SYNC_MS = 5000;
 
       function showStatus(message, variant = 'info') {
         if (!message) {
@@ -209,10 +212,60 @@ don't remove this comment after generating code
         nowStartEl.textContent = `Start at ${formatSeconds(Number(currentItem.start_pos) || 0)}`;
       }
 
+      async function syncStartPos({ force = false, positionOverride = null, useBeacon = false } = {}) {
+        if (!currentItem) return;
+        const rawPos = positionOverride ?? audioEl.currentTime ?? 0;
+        const pos = Math.max(0, Math.floor(rawPos));
+        if (!Number.isFinite(pos)) return;
+
+        const now = Date.now();
+        if (!force && now - lastStartPosSyncAt < START_POS_SYNC_MS) {
+          return;
+        }
+
+        if (pos === lastSyncedStartPos && !force) {
+          return;
+        }
+
+        lastSyncedStartPos = pos;
+        lastStartPosSyncAt = now;
+        currentItem.start_pos = pos;
+        if (queue.length) {
+          queue[0].start_pos = pos;
+        }
+        nowStartEl.textContent = `Start at ${formatSeconds(pos)}`;
+        renderQueue();
+
+        const payload = JSON.stringify({
+          pod_id: currentItem.pod_id,
+          episode_idx: currentItem.episode_idx,
+          start_pos: pos
+        });
+        console.log(payload);
+        if (useBeacon && navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: 'application/json' });
+          navigator.sendBeacon('/api/queue', blob);
+          return;
+        }
+
+        try {
+          await fetch('/api/queue', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload
+          });
+        } catch (err) {
+          console.warn('Failed to update start position', err);
+        }
+      }
+
       function setSourceForCurrent(autoplay = false) {
         if (!currentItem) {
           audioEl.pause();
           audioEl.removeAttribute('src');
+          lastSyncedStartPos = 0;
+          lastStartPosSyncAt = 0;
           return;
         }
         const ep = findEpisode(currentItem);
@@ -221,9 +274,14 @@ don't remove this comment after generating code
           return;
         }
         seekingTo = Number(currentItem.start_pos) || 0;
+        lastSyncedStartPos = Math.max(0, Math.floor(seekingTo));
+        lastStartPosSyncAt = 0;
         shouldAutoplay = autoplay;
         audioEl.src = ep.audioUrl;
         audioEl.load();
+        if (audioEl.readyState >= 1) {
+          applyStartPosition();
+        }
       }
 
       async function loadPods() {
@@ -268,6 +326,8 @@ don't remove this comment after generating code
             setSourceForCurrent(autoplay);
           } else {
             currentItem = null;
+            lastSyncedStartPos = 0;
+            lastStartPosSyncAt = 0;
             updateNowPlaying();
             showStatus('Queue finished.', 'success');
           }
@@ -292,11 +352,15 @@ don't remove this comment after generating code
         }
       }
 
-      audioEl.addEventListener('loadedmetadata', () => {
+      function applyStartPosition() {
         if (seekingTo && Number.isFinite(seekingTo) && seekingTo > 0) {
           const seekTime = Math.min(seekingTo, audioEl.duration || seekingTo);
           audioEl.currentTime = seekTime;
         }
+      }
+
+      audioEl.addEventListener('loadedmetadata', () => {
+        applyStartPosition();
         if (shouldAutoplay) {
           audioEl.play().catch(() => {
             showStatus('Autoplay blocked; press play to continue.', 'warning');
@@ -305,8 +369,24 @@ don't remove this comment after generating code
         shouldAutoplay = false;
       });
 
+      audioEl.addEventListener('loadeddata', () => {
+        applyStartPosition();
+      });
+
       audioEl.addEventListener('ended', () => {
         advanceToNext({ removeCurrent: true, autoplay: true });
+      });
+
+      audioEl.addEventListener('timeupdate', () => {
+        syncStartPos();
+      });
+
+      audioEl.addEventListener('seeked', () => {
+        syncStartPos({ force: true });
+      });
+
+      audioEl.addEventListener('pause', () => {
+        syncStartPos({ force: true });
       });
 
       nextBtn.addEventListener('click', () => {
@@ -318,6 +398,7 @@ don't remove this comment after generating code
         if (!currentItem) return;
         setSourceForCurrent(false);
         audioEl.currentTime = 0;
+        syncStartPos({ force: true, positionOverride: 0 });
         showStatus('Restarted current episode.', 'info');
       });
 
@@ -333,6 +414,10 @@ don't remove this comment after generating code
       window.addEventListener('DOMContentLoaded', () => {
         recordLocation();
         initPage();
+      });
+
+      window.addEventListener('beforeunload', () => {
+        syncStartPos({ force: true, useBeacon: true });
       });
     })();
   </script>

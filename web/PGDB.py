@@ -105,10 +105,10 @@ class PGDB:
 
     def add_to_queue(self, user_id: str, pod_id: str, episode_idx: int, start_pos: int = 0) -> bool:
         """
-        Add an episode to the player's queue.
+        Add an episode to the player's queue or update its start position if it already exists.
 
-        Returns False if the (user_id, pod_id, episode_idx) tuple already exists;
-        otherwise inserts the record with idx = current max + 1 and returns True.
+        Returns False when an existing record was updated; otherwise inserts with idx = current max + 1
+        and returns True.
         """
         if not user_id or not pod_id:
             raise ValueError("user_id and pod_id are required")
@@ -118,13 +118,23 @@ class PGDB:
         with self._cursor() as cur:
             cur.execute(
                 """
-                SELECT 1 FROM player_queue
+                SELECT start_pos FROM player_queue
                 WHERE user_id = %s AND pod_id = %s AND episode_idx = %s
                 LIMIT 1;
                 """,
                 (user_id, pod_id, episode_idx),
             )
-            if cur.fetchone():
+            existing = cur.fetchone()
+            if existing:
+                # Update the start position for the existing queue entry.
+                cur.execute(
+                    """
+                    UPDATE player_queue
+                    SET start_pos = %s
+                    WHERE user_id = %s AND pod_id = %s AND episode_idx = %s;
+                    """,
+                    (start_pos, user_id, pod_id, episode_idx),
+                )
                 return False
 
             cur.execute(
