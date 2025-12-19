@@ -19,18 +19,15 @@
   </header>
 
   <div class="frame-wrap">
-    <iframe id="content-frame" src="" title="Content"></iframe>
+    <iframe id="content-frame" src="/library.html" title="Content"></iframe>
+    <div id="player-container" class="player-container" style="display: none;">
+      <iframe id="player-frame" title="Player" src="/player.html" scrolling="no"></iframe>
+    </div>
   </div>
 
   <nav class="bottom-nav">
     <button class="nav-btn active menu-link" data-target="/library.html" aria-label="Library">
       <i class="fa-solid fa-book"></i><span>Library</span>
-    </button>
-    <button class="nav-btn menu-link" data-target="/queue.html" aria-label="Queue">
-      <i class="fa-solid fa-list-ol"></i><span>Queue</span>
-    </button>
-    <button class="nav-btn menu-link" data-target="/player.html" aria-label="Player">
-      <i class="fa-solid fa-circle-play"></i><span>Player</span>
     </button>
   </nav>
 
@@ -58,18 +55,58 @@
       });
     });
 
-    async function loadLastLocation() {
-      const fallback = '/library.html';
-      try {
-        const res = await fetch('/api/last_location', { credentials: 'include' });
-        if (!res.ok) throw new Error('failed');
-        const { uri } = await res.json();
-        setFrameTarget(uri || fallback);
-      } catch (_err) {
-        setFrameTarget(fallback);
+    const playerContainer = document.getElementById('player-container');
+    const playerFrame = document.getElementById('player-frame');
+    let playerVisible = false;
+    let playerMode = 'collapsed';
+
+    function applyPlayerHeight() {
+      playerFrame.style.height = playerMode === 'expanded' ? '60vh' : '25vh';
+    }
+
+    function setPlayerVisible(show) {
+      if (show) {
+        if (!playerVisible) {
+          playerContainer.style.display = 'block';
+          applyPlayerHeight();
+          playerVisible = true;
+          if (!playerFrame.src) {
+            playerFrame.src = '/player.html';
+          }
+        }
+      } else {
+        playerContainer.style.display = 'none';
+        playerVisible = false;
       }
     }
 
+    async function loadPlayerQueue() {
+      try {
+        const res = await fetch('/api/queue', { credentials: 'include' });
+        if (!res.ok) throw new Error('queue request failed');
+        const data = await res.json();
+        setPlayerVisible(Array.isArray(data) && data.length > 0);
+      } catch (err) {
+        console.warn('Failed to load queue', err);
+        setPlayerVisible(false);
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      if (!event?.data || !event.data.type) return;
+      if (event.data.type === 'player-new-mode') {
+        playerMode = event.data.mode === 'expanded' ? 'expanded' : 'collapsed';
+        if (playerVisible) applyPlayerHeight();
+      }
+      if (event.data.type === 'queue-updated') {
+        loadPlayerQueue();
+        if (playerFrame?.contentWindow) {
+          playerFrame.contentWindow.postMessage({ type: 'reload-queue' }, '*');
+        }
+      }
+    });
+
+ 
     const logoffBtn = document.getElementById('logoff-btn');
     logoffBtn.addEventListener('click', async () => {
       try {
@@ -87,7 +124,9 @@
       }
     });
 
-    window.addEventListener('DOMContentLoaded', loadLastLocation);
+    window.addEventListener('DOMContentLoaded', () => {
+      loadPlayerQueue();
+    });
   </script>
 </body>
 </html>

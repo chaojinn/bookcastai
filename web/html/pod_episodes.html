@@ -76,9 +76,14 @@
 
         showStatus('Loading episodes...');
         try {
-          const res = await fetch('/api/get_pods', { credentials: 'include' });
-          if (!res.ok) throw new Error(`Request failed: ${res.status}`);
-          const pods = await res.json();
+          const [podsRes, queueRes] = await Promise.all([
+            fetch('/api/get_pods', { credentials: 'include' }),
+            fetch('/api/queue', { credentials: 'include' })
+          ]);
+          if (!podsRes.ok) throw new Error(`Request failed: ${podsRes.status}`);
+          if (!queueRes.ok) throw new Error(`Request failed: ${queueRes.status}`);
+          const [pods, queue] = await Promise.all([podsRes.json(), queueRes.json()]);
+          const queueIds = new Set(queue.map(item => `${item.episode_idx}`));
           const pod = pods.find(p => p.id === podId);
           if (!pod) {
             showStatus('Podcast not found.', true);
@@ -91,23 +96,31 @@
             ? `${pod.episodes.length} episode${pod.episodes.length === 1 ? '' : 's'}`
             : 'No episodes found.';
 
-          const rows = (pod.episodes || []).map(ep => ([
-            ep.index || '',
-            ep.title || 'Untitled',
-            ep.duration || '',
-            `
-              <div class="actions">
-                <button type="button" class="btn btn-sm btn-outline-primary">
-                  <i class="fa-solid fa-play"></i> Play
-                </button>
+          const rows = (pod.episodes || []).map(ep => {
+            const idxVal = ep.index || '';
+            const isQueued = queueIds.has(idxVal);
+            const queueBtn = isQueued
+              ? ''
+              : `
                 <button type="button"
                         class="btn btn-sm btn-outline-secondary btn-add-queue"
-                        data-episode-idx="${ep.index || ''}">
-                  <i class="fa-solid fa-list-ul"></i> Add to queue
-                </button>
-              </div>
-            `
-          ]));
+                        data-episode-idx="${idxVal}">
+                  <i class="fa-solid fa-list-ul"></i> <span>Add to queue</span>
+                </button>`;
+            return ([
+              idxVal,
+              ep.title || 'Untitled',
+              ep.duration || '',
+              `
+                <div class="actions">
+                  <button type="button" class="btn btn-sm btn-outline-primary">
+                    <i class="fa-solid fa-play"></i> <span>Play</span>
+                  </button>
+                  ${queueBtn}
+                </div>
+              `
+            ]);
+          });
 
           $('#episodes-table').DataTable({
             data: rows,
@@ -154,6 +167,19 @@
             showStatus('Episode is already in your queue.', false);
           } else {
             statusEl.style.display = 'none';
+            const btn = document.querySelector(`.btn-add-queue[data-episode-idx="${episodeIdx}"]`);
+            if (btn) {
+              const container = btn.closest('.actions');
+              btn.remove();
+              if (container && !container.querySelector('.btn-add-queue')) {
+                container.classList.add('queue-added');
+              }
+            }
+            try {
+              window.parent?.postMessage({ type: 'queue-updated' }, '*');
+            } catch (err) {
+              console.warn('Failed to notify parent about queue update', err);
+            }
           }
         } catch (err) {
           showStatus('Failed to add to queue.', true);
