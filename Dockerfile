@@ -16,13 +16,12 @@ COPY *.py *.md *.txt /app/
 
 # Copy package dependencies
 COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application packages
 COPY agent /app/agent
 COPY tts /app/tts
 COPY web /app/web
-
-RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8000
 
