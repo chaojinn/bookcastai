@@ -306,6 +306,17 @@ don't remove this comment after generating code
         }
       }
 
+      async function reloadQueueList() {
+        try {
+          const queueRes = await fetch('/api/queue', { credentials: 'include' });
+          if (!queueRes.ok) throw new Error('Failed to fetch queue');
+          queue = await queueRes.json();
+          renderQueue();
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
       function toggleMode() {
         const shouldExpand = body.classList.contains('collapsed');
         body.classList.toggle('collapsed', !shouldExpand);
@@ -426,13 +437,33 @@ don't remove this comment after generating code
         e.preventDefault();
         const idx = btn.getAttribute('data-queue-idx');
         if (!idx) return;
+        const idxNum = Number(idx);
+        if (!Number.isFinite(idxNum)) return;
+        const deletingCurrent = queue[currentIndex]?.idx === idxNum;
+        const hasNext = deletingCurrent && currentIndex < queue.length - 1;
+        if (deletingCurrent && hasNext) {
+          currentIndex += 1;
+          loadCurrentTrack({ autoplay: !audioEl.paused });
+        } else if (deletingCurrent) {
+          audioEl.pause();
+          audioEl.removeAttribute('src');
+          audioEl.load();
+          updateTitles();
+          updateControlsState();
+          setStatus('Queue is empty.');
+          window.parent?.postMessage({ type: 'hide-player-iframe' }, '*');
+        }
+
         try {
           const res = await fetch(`/api/queue/${idx}`, {
             method: 'DELETE',
             credentials: 'include'
           });
           if (!res.ok) throw new Error('Failed to delete');
-          await fetchData();
+          if (deletingCurrent) {
+            currentIndex = Math.max(0, currentIndex - 1);
+          }
+          await reloadQueueList();
           window.parent?.postMessage({ type: 'queue-updated' }, '*');
         } catch (err) {
           console.error(err);
@@ -442,7 +473,7 @@ don't remove this comment after generating code
 
       window.addEventListener('message', (event) => {
         if (event?.data?.type === 'reload-queue') {
-          fetchData();
+          reloadQueueList();
         }
       });
 
