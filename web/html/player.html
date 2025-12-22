@@ -111,6 +111,7 @@ don't remove this comment after generating code
       let pendingSeek = 0;
       let shouldAutoplay = false;
       let userSeeking = false;
+      let progressSaveTimer = null;
 
       function notifyMode(mode) {
         try {
@@ -153,6 +154,93 @@ don't remove this comment after generating code
           durationLabel: episode?.duration || (Number.isFinite(durationSeconds) ? formatSeconds(durationSeconds) : '--:--'),
           durationSeconds
         };
+      }
+
+      async function updateQueueCurrentFlag(item, isCurrent) {
+        if (!item) return;
+        try {
+          const res = await fetch('/api/queue', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pod_id: item.pod_id,
+              episode_idx: item.episode_idx,
+              start_pos: Number(item.start_pos) || 0,
+              is_current: isCurrent
+            })
+          });
+          if (!res.ok) throw new Error('Failed to update queue item');
+          item.is_current = isCurrent;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      async function updateQueueStartPos(item, startPos) {
+        if (!item) return;
+        try {
+          const res = await fetch('/api/queue', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pod_id: item.pod_id,
+              episode_idx: item.episode_idx,
+              start_pos: Math.max(0, Math.floor(Number(startPos) || 0)),
+              is_current: !!item.is_current
+            })
+          });
+          if (!res.ok) throw new Error('Failed to update start_pos');
+          item.start_pos = Math.max(0, Math.floor(Number(startPos) || 0));
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      function startProgressSaver() {
+        if (progressSaveTimer) return;
+        progressSaveTimer = window.setInterval(() => {
+          if (!queue.length || audioEl.paused) return;
+          const item = queue[currentIndex];
+          void updateQueueStartPos(item, audioEl.currentTime || 0);
+        }, 10000);
+      }
+
+      function stopProgressSaver() {
+        if (!progressSaveTimer) return;
+        window.clearInterval(progressSaveTimer);
+        progressSaveTimer = null;
+      }
+
+      function ensureFirstCurrentFlag() {
+        if (queue.length === 1 && !queue[0].is_current) {
+          queue[0].is_current = true;
+          void updateQueueCurrentFlag(queue[0], true);
+        }
+      }
+
+      async function setCurrentIndex(nextIndex, { autoplay = false } = {}) {
+        if (nextIndex < 0 || nextIndex >= queue.length) return;
+        const prevIndex = currentIndex;
+        const nextItem = queue[nextIndex];
+        if (nextIndex === prevIndex) {
+          if (nextItem && !nextItem.is_current) {
+            nextItem.is_current = true;
+            void updateQueueCurrentFlag(nextItem, true);
+          }
+          loadCurrentTrack({ autoplay });
+          return;
+        }
+        const prevItem = queue[prevIndex];
+        if (prevItem) prevItem.is_current = false;
+        if (nextItem) nextItem.is_current = true;
+        currentIndex = nextIndex;
+        loadCurrentTrack({ autoplay });
+        await Promise.all([
+          updateQueueCurrentFlag(prevItem, false),
+          updateQueueCurrentFlag(nextItem, true)
+        ]);
       }
 
       function updateTitles() {
@@ -289,12 +377,16 @@ don't remove this comment after generating code
           if (!queueRes.ok) throw new Error('Failed to fetch queue');
           pods = await podsRes.json();
           queue = await queueRes.json();
-          if (typeof currentIdxValue === 'number') {
+          const flaggedIdx = queue.findIndex(item => item.is_current);
+          if (flaggedIdx >= 0) {
+            currentIndex = flaggedIdx;
+          } else if (typeof currentIdxValue === 'number') {
             const foundIdx = queue.findIndex(item => item.idx === currentIdxValue);
             currentIndex = foundIdx >= 0 ? foundIdx : 0;
           } else {
             currentIndex = 0;
           }
+          ensureFirstCurrentFlag();
           renderQueue();
           updateTitles();
           updateControlsState();
@@ -311,6 +403,13 @@ don't remove this comment after generating code
           const queueRes = await fetch('/api/queue', { credentials: 'include' });
           if (!queueRes.ok) throw new Error('Failed to fetch queue');
           queue = await queueRes.json();
+          const flaggedIdx = queue.findIndex(item => item.is_current);
+          if (flaggedIdx >= 0) {
+            currentIndex = flaggedIdx;
+          } else if (currentIndex >= queue.length) {
+            currentIndex = Math.max(0, queue.length - 1);
+          }
+          ensureFirstCurrentFlag();
           renderQueue();
         } catch (err) {
           console.error(err);
@@ -341,6 +440,7 @@ don't remove this comment after generating code
         if (!queue.length) return;
         audioEl.currentTime = 0;
         updateTime();
+        void updateQueueStartPos(queue[currentIndex], 0);
         if (audioEl.paused && shouldAutoplay) {
           audioEl.play().catch(() => {});
         }
@@ -350,6 +450,7 @@ don't remove this comment after generating code
         if (!queue.length) return;
         audioEl.currentTime = Math.max(0, (audioEl.currentTime || 0) - 10);
         updateTime();
+        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
       });
 
       forwardBtn.addEventListener('click', () => {
@@ -357,12 +458,13 @@ don't remove this comment after generating code
         const duration = Number.isFinite(audioEl.duration) ? audioEl.duration : (audioEl.currentTime || 0) + 10;
         audioEl.currentTime = Math.min(duration, (audioEl.currentTime || 0) + 10);
         updateTime();
+        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
       });
 
       nextBtn.addEventListener('click', () => {
         if (currentIndex >= queue.length - 1) return;
-        currentIndex += 1;
-        loadCurrentTrack({ autoplay: true });
+        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+        void setCurrentIndex(currentIndex + 1, { autoplay: true });
       });
 
       prevBtn.addEventListener('click', () => {
@@ -370,10 +472,11 @@ don't remove this comment after generating code
         if (currentIndex === 0) {
           audioEl.currentTime = 0;
           updateTime();
+          void updateQueueStartPos(queue[currentIndex], 0);
           return;
         }
-        currentIndex -= 1;
-        loadCurrentTrack({ autoplay: true });
+        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+        void setCurrentIndex(currentIndex - 1, { autoplay: true });
       });
 
       toggleModeBtn.addEventListener('click', toggleMode);
@@ -396,15 +499,23 @@ don't remove this comment after generating code
       audioEl.addEventListener('play', () => {
         updatePlayIcon();
         setStatus('Playing...');
+        startProgressSaver();
       });
       audioEl.addEventListener('pause', () => {
         updatePlayIcon();
         setStatus('Paused.');
+        stopProgressSaver();
+        if (queue.length) {
+          void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+        }
       });
       audioEl.addEventListener('ended', () => {
+        stopProgressSaver();
+        if (queue.length) {
+          void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+        }
         if (currentIndex < queue.length - 1) {
-          currentIndex += 1;
-          loadCurrentTrack({ autoplay: true });
+          void setCurrentIndex(currentIndex + 1, { autoplay: true });
         } else {
           setStatus('Reached end of queue.');
           updatePlayIcon();
@@ -425,6 +536,9 @@ don't remove this comment after generating code
         userSeeking = false;
         audioEl.currentTime = val;
         updateTime();
+        if (queue.length) {
+          void updateQueueStartPos(queue[currentIndex], val);
+        }
       });
 
       progressEl.addEventListener('pointerup', () => {
@@ -442,8 +556,7 @@ don't remove this comment after generating code
         const deletingCurrent = queue[currentIndex]?.idx === idxNum;
         const hasNext = deletingCurrent && currentIndex < queue.length - 1;
         if (deletingCurrent && hasNext) {
-          currentIndex += 1;
-          loadCurrentTrack({ autoplay: !audioEl.paused });
+          void setCurrentIndex(currentIndex + 1, { autoplay: !audioEl.paused });
         } else if (deletingCurrent) {
           audioEl.pause();
           audioEl.removeAttribute('src');
@@ -460,9 +573,6 @@ don't remove this comment after generating code
             credentials: 'include'
           });
           if (!res.ok) throw new Error('Failed to delete');
-          if (deletingCurrent) {
-            currentIndex = Math.max(0, currentIndex - 1);
-          }
           await reloadQueueList();
           window.parent?.postMessage({ type: 'queue-updated' }, '*');
         } catch (err) {

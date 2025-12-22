@@ -64,8 +64,15 @@ class PGDB:
                     pod_id VARCHAR(128),
                     episode_idx INT,
                     start_pos INT DEFAULT 0,
+                    is_current BOOLEAN DEFAULT FALSE,
                     PRIMARY KEY (user_id, idx)
                 );
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE player_queue
+                ADD COLUMN IF NOT EXISTS is_current BOOLEAN DEFAULT FALSE;
                 """
             )
             cur.execute(
@@ -103,7 +110,14 @@ class PGDB:
             row = cur.fetchone()
             return row[0] if row else None
 
-    def add_to_queue(self, user_id: str, pod_id: str, episode_idx: int, start_pos: int = 0) -> bool:
+    def add_to_queue(
+        self,
+        user_id: str,
+        pod_id: str,
+        episode_idx: int,
+        start_pos: int = 0,
+        is_current: bool = False,
+    ) -> bool:
         """
         Add an episode to the player's queue or update its start position if it already exists.
 
@@ -130,10 +144,11 @@ class PGDB:
                 cur.execute(
                     """
                     UPDATE player_queue
-                    SET start_pos = %s
+                    SET start_pos = %s,
+                        is_current = %s
                     WHERE user_id = %s AND pod_id = %s AND episode_idx = %s;
                     """,
-                    (start_pos, user_id, pod_id, episode_idx),
+                    (start_pos, is_current, user_id, pod_id, episode_idx),
                 )
                 return False
 
@@ -146,10 +161,10 @@ class PGDB:
 
             cur.execute(
                 """
-                INSERT INTO player_queue (user_id, idx, pod_id, episode_idx, start_pos)
-                VALUES (%s, %s, %s, %s, %s);
+                INSERT INTO player_queue (user_id, idx, pod_id, episode_idx, start_pos, is_current)
+                VALUES (%s, %s, %s, %s, %s, %s);
                 """,
-                (user_id, next_idx, pod_id, episode_idx, start_pos),
+                (user_id, next_idx, pod_id, episode_idx, start_pos, is_current),
             )
             return True
 
@@ -160,7 +175,7 @@ class PGDB:
         with self._cursor() as cur:
             cur.execute(
                 """
-                SELECT idx, pod_id, episode_idx, start_pos
+                SELECT idx, pod_id, episode_idx, start_pos, is_current
                 FROM player_queue
                 WHERE user_id = %s
                 ORDER BY idx ASC;
@@ -174,6 +189,7 @@ class PGDB:
                     "pod_id": row[1],
                     "episode_idx": row[2],
                     "start_pos": row[3],
+                    "is_current": row[4],
                 }
                 for row in rows
             ]
@@ -227,13 +243,24 @@ class PGDB:
             if cur.rowcount == 0:
                 return False
 
-            # Shift down any items that were after the removed item.
+            # Shift down any items that were after the removed item one by one to
+            # avoid primary key collisions.
             cur.execute(
                 """
-                UPDATE player_queue
-                SET idx = idx - 1
-                WHERE user_id = %s AND idx > %s;
+                SELECT idx
+                FROM player_queue
+                WHERE user_id = %s AND idx > %s
+                ORDER BY idx ASC;
                 """,
                 (user_id, idx),
             )
+            for (current_idx,) in cur.fetchall():
+                cur.execute(
+                    """
+                    UPDATE player_queue
+                    SET idx = %s
+                    WHERE user_id = %s AND idx = %s;
+                    """,
+                    (current_idx - 1, user_id, current_idx),
+                )
             return True
