@@ -82,6 +82,7 @@ don't remove this comment after generating code
 
   <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+  <script src="/js/main.js"></script>
   <script>
     (() => {
       const body = document.body;
@@ -159,9 +160,8 @@ don't remove this comment after generating code
       async function updateQueueCurrentFlag(item, isCurrent) {
         if (!item) return;
         try {
-          const res = await fetch('/api/queue', {
+          const res = await fetchWithRefresh('/api/queue', {
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               pod_id: item.pod_id,
@@ -180,9 +180,8 @@ don't remove this comment after generating code
       async function updateQueueStartPos(item, startPos) {
         if (!item) return;
         try {
-          const res = await fetch('/api/queue', {
+          const res = await fetchWithRefresh('/api/queue', {
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               pod_id: item.pod_id,
@@ -370,8 +369,8 @@ don't remove this comment after generating code
         setStatus('Loading queue...');
         try {
           const [podsRes, queueRes] = await Promise.all([
-            fetch('/api/get_pods', { credentials: 'include' }),
-            fetch('/api/queue', { credentials: 'include' })
+            fetchWithRefresh('/api/get_pods'),
+            fetchWithRefresh('/api/queue')
           ]);
           if (!podsRes.ok) throw new Error('Failed to fetch pods');
           if (!queueRes.ok) throw new Error('Failed to fetch queue');
@@ -400,7 +399,7 @@ don't remove this comment after generating code
 
       async function reloadQueueList() {
         try {
-          const queueRes = await fetch('/api/queue', { credentials: 'include' });
+          const queueRes = await fetchWithRefresh('/api/queue');
           if (!queueRes.ok) throw new Error('Failed to fetch queue');
           queue = await queueRes.json();
           const flaggedIdx = queue.findIndex(item => item.is_current);
@@ -568,9 +567,8 @@ don't remove this comment after generating code
         }
 
         try {
-          const res = await fetch(`/api/queue/${idx}`, {
+          const res = await fetchWithRefresh(`/api/queue/${idx}`, {
             method: 'DELETE',
-            credentials: 'include'
           });
           if (!res.ok) throw new Error('Failed to delete');
           await reloadQueueList();

@@ -56,6 +56,7 @@ def _init_supertokens() -> None:
                 cookie_same_site="lax",
                 cookie_secure=False,
                 get_token_transfer_method=lambda _req, _create, _ctx: "cookie",
+                
             ),
             emailpassword.init(),
         ],

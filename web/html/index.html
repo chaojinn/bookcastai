@@ -33,6 +33,7 @@
 
   <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"  crossorigin="anonymous"></script>
+  <script src="/js/main.js"></script>
   <script>
     const frame = document.getElementById('content-frame');
 
@@ -82,7 +83,7 @@
 
     async function loadPlayerQueue() {
       try {
-        const res = await fetch('/api/queue', { credentials: 'include' });
+        const res = await fetchWithRefresh('/api/queue');
         if (!res.ok) throw new Error('queue request failed');
         const data = await res.json();
         setPlayerVisible(Array.isArray(data) && data.length > 0);
@@ -110,9 +111,8 @@
     const logoffBtn = document.getElementById('logoff-btn');
     logoffBtn.addEventListener('click', async () => {
       try {
-        const res = await fetch('/api/logoff', {
+        const res = await fetchWithRefresh('/api/logoff', {
           method: 'POST',
-          credentials: 'include',
         });
         if (res.ok) {
           window.location.href = '/login.html';
