@@ -17,7 +17,7 @@ COPY *.py *.md *.txt /app/
 # Copy package dependencies
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN apt update && apt install ffmpeg -y
 # Copy application packages
 COPY agent /app/agent
 COPY tts /app/tts
