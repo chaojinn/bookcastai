@@ -1,5 +1,6 @@
 (() => {
   async function refreshSession() {
+    console.log("refreshSession called");
     try {
       const res = await fetch('/auth/session/refresh', {
         method: 'POST',

@@ -106,10 +106,10 @@ def _build_graph(
         default_chunk_size=normalized_chunk_size,
     )
     assemble_payload = make_assemble_payload_node()
-
+    
+    graph.add_node("fetch_metadata", fetch_metadata)
     graph.add_node("fetch_table_of_contents", fetch_table_of_contents)
     graph.add_node("fetch_chapter_content", fetch_chapter_content)
-    graph.add_node("fetch_metadata", fetch_metadata)
     graph.add_node("construct_book_structure", construct_book_structure)
     graph.add_node("normalize_titles", normalize_titles)
     graph.add_node("normalize_first_sentence", normalize_first_sentence)

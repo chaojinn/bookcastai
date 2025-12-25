@@ -39,6 +39,7 @@ def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAg
         preview_path_value = state.get("preview_path")
         if not preview_path_value:
             merged = _merge_untitled_chapters(original_chapters)
+            logger.debug("total merged chapters: %s", len(merged))
             return {"chapters": merged}
         preview_items: List[dict[str, str | int]] = []
         for chapter in original_chapters:
@@ -65,6 +66,7 @@ def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAg
             errors = list(state.get("errors", []))
             errors.append(f"Failed to write preview JSON: {exc}")
             merged = _merge_untitled_chapters(original_chapters)
+            logger.debug("total merged chapters: %s", len(merged))
             return {"chapters": merged, "errors": errors}
 
         cache_path = preview_path.parent / "openroute_cache.json"
@@ -81,9 +83,23 @@ def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAg
                 for index, chapter in enumerate(filtered_chapters, start=1):
                     chapter["chapter_number"] = index
                 merged = _merge_untitled_chapters(filtered_chapters)
+                logger.debug("total merged chapters: %s", len(merged))
+                for chapter in merged:
+                    if not isinstance(chapter, dict):
+                        continue
+                    title = chapter.get("chapter_title") if isinstance(chapter.get("chapter_title"), str) else ""
+                    content = chapter.get("content_text") if isinstance(chapter.get("content_text"), str) else ""
+                    logger.info(
+                        "Chapter %s: '%s' (length=%s)",
+                        chapter.get("chapter_number"),
+                        title,
+                        len(content),
+                    )
+                
                 return {"chapters": merged}
             logger.warning("OpenRoute selection returned numbers not matching any chapter.")
         merged = _merge_untitled_chapters(original_chapters)
+        logger.debug("total merged chapters: %s", len(merged))
         return {"chapters": merged}
 
     return construct_book_structure

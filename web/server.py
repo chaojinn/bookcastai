@@ -136,29 +136,8 @@ def _build_app() -> FastAPI:
     @app.middleware("http")
     async def _enforce_login_redirect(request, call_next):  # type: ignore[unused-arg]
         path = request.url.path
-        if path.startswith("/api") or path.startswith("/css") or path.startswith("/js"):
-            return await call_next(request)
-
-        allowed_html = {"/login.html", "/register.html"}
-        if path in allowed_html:
-            return await call_next(request)
-
         if path == "/":
-            return RedirectResponse("/login.html")
-
-        if path.endswith(".html"):
-            try:
-                session_container = await get_session(
-                    request,
-                    session_required=False,
-                    anti_csrf_check=False,
-                )
-            except TryRefreshTokenError:
-                return RedirectResponse("/login.html")
-            if session_container is not None:
-                return await call_next(request)
-            return RedirectResponse("/login.html")
-
+            return RedirectResponse("/index.html")
         return await call_next(request)
 
 
