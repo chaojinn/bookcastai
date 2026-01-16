@@ -42,8 +42,12 @@
       const statusEl = document.getElementById('status');
       const titleEl = document.getElementById('pod-title');
       const subtitleEl = document.getElementById('pod-subtitle');
+      const tableEl = document.getElementById('episodes-table');
       const params = new URLSearchParams(window.location.search);
       const podId = params.get('pod_id');
+      let table = null;
+      let podEpisodes = [];
+      let pendingQueueRefresh = false;
 
       function showStatus(message, isError = false) {
         statusEl.textContent = message;
@@ -64,6 +68,72 @@
           });
         } catch (err) {
           console.warn('Failed to record last location', err);
+        }
+      }
+
+      function buildRows(queueIds) {
+        return (podEpisodes || []).map(ep => {
+          const idxVal = ep.index || '';
+          const isQueued = queueIds.has(idxVal);
+          const queueBtn = isQueued
+            ? ''
+            : `
+              <button type="button"
+                      class="btn btn-sm btn-outline-secondary btn-add-queue"
+                      data-episode-idx="${idxVal}">
+                <i class="fa-solid fa-list-ul"></i> <span>Add to queue</span>
+              </button>`;
+          return ([
+            idxVal,
+            ep.title || 'Untitled',
+            ep.duration || '',
+            `
+              <div class="actions">
+                <button type="button" class="btn btn-sm btn-outline-primary">
+                  <i class="fa-solid fa-play"></i> <span>Play</span>
+                </button>
+                ${queueBtn}
+              </div>
+            `
+          ]);
+        });
+      }
+
+      function renderTable(rows) {
+        if (table) {
+          table.clear();
+          table.rows.add(rows);
+          table.draw(false);
+          return;
+        }
+        table = $('#episodes-table').DataTable({
+          data: rows,
+          columns: [
+            { title: 'Index' },
+            { title: 'Title' },
+            { title: 'Duration' },
+            { title: 'Actions', orderable: false }
+          ],
+          paging: true,
+          pageLength: 10,
+          order: rows.length ? [[0, 'asc']] : [],
+          searching: false,
+          info: false,
+          lengthChange: false
+        });
+      }
+
+      async function refreshQueueState() {
+        if (!table || !podId) return;
+        try {
+          const queueRes = await fetchWithRefresh('/api/queue');
+          if (!queueRes.ok) throw new Error(`Request failed: ${queueRes.status}`);
+          const queue = await queueRes.json();
+          const queueIds = new Set(queue.map(item => `${item.episode_idx}`));
+          renderTable(buildRows(queueIds));
+          statusEl.style.display = 'none';
+        } catch (err) {
+          console.warn('Failed to refresh queue state', err);
         }
       }
 
@@ -96,49 +166,14 @@
             ? `${pod.episodes.length} episode${pod.episodes.length === 1 ? '' : 's'}`
             : 'No episodes found.';
 
-          const rows = (pod.episodes || []).map(ep => {
-            const idxVal = ep.index || '';
-            const isQueued = queueIds.has(idxVal);
-            const queueBtn = isQueued
-              ? ''
-              : `
-                <button type="button"
-                        class="btn btn-sm btn-outline-secondary btn-add-queue"
-                        data-episode-idx="${idxVal}">
-                  <i class="fa-solid fa-list-ul"></i> <span>Add to queue</span>
-                </button>`;
-            return ([
-              idxVal,
-              ep.title || 'Untitled',
-              ep.duration || '',
-              `
-                <div class="actions">
-                  <button type="button" class="btn btn-sm btn-outline-primary">
-                    <i class="fa-solid fa-play"></i> <span>Play</span>
-                  </button>
-                  ${queueBtn}
-                </div>
-              `
-            ]);
-          });
-
-          $('#episodes-table').DataTable({
-            data: rows,
-            columns: [
-              { title: 'Index' },
-              { title: 'Title' },
-              { title: 'Duration' },
-              { title: 'Actions', orderable: false }
-            ],
-            paging: true,
-            pageLength: 10,
-            order: rows.length ? [[0, 'asc']] : [],
-            searching: false,
-            info: false,
-            lengthChange: false
-          });
+          podEpisodes = pod.episodes || [];
+          renderTable(buildRows(queueIds));
 
           statusEl.style.display = 'none';
+          if (pendingQueueRefresh) {
+            pendingQueueRefresh = false;
+            void refreshQueueState();
+          }
         } catch (err) {
           showStatus('Failed to load episodes.', true);
           console.error(err);
@@ -193,6 +228,18 @@
           const idx = this.getAttribute('data-episode-idx');
           addToQueue(idx);
         });
+      });
+
+      window.addEventListener('message', (event) => {
+        if (event?.data?.type !== 'queue-updated') return;
+        if (!table) {
+          pendingQueueRefresh = true;
+          return;
+        }
+        const hasActions = !!tableEl.querySelector('.actions');
+        if (hasActions) {
+          void refreshQueueState();
+        }
       });
     })();
   </script>

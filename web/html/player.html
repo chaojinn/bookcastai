@@ -226,7 +226,7 @@ don't remove this comment after generating code
         if (nextIndex === prevIndex) {
           if (nextItem && !nextItem.is_current) {
             nextItem.is_current = true;
-            void updateQueueCurrentFlag(nextItem, true);
+            await updateQueueCurrentFlag(nextItem, true);
           }
           loadCurrentTrack({ autoplay });
           return;
@@ -397,23 +397,7 @@ don't remove this comment after generating code
         }
       }
 
-      async function reloadQueueList() {
-        try {
-          const queueRes = await fetchWithRefresh('/api/queue');
-          if (!queueRes.ok) throw new Error('Failed to fetch queue');
-          queue = await queueRes.json();
-          const flaggedIdx = queue.findIndex(item => item.is_current);
-          if (flaggedIdx >= 0) {
-            currentIndex = flaggedIdx;
-          } else if (currentIndex >= queue.length) {
-            currentIndex = Math.max(0, queue.length - 1);
-          }
-          ensureFirstCurrentFlag();
-          renderQueue();
-        } catch (err) {
-          console.error(err);
-        }
-      }
+    
 
       function toggleMode() {
         const shouldExpand = body.classList.contains('collapsed');
@@ -555,8 +539,9 @@ don't remove this comment after generating code
         const deletingCurrent = queue[currentIndex]?.idx === idxNum;
         const hasNext = deletingCurrent && currentIndex < queue.length - 1;
         if (deletingCurrent && hasNext) {
-          void setCurrentIndex(currentIndex + 1, { autoplay: !audioEl.paused });
-        } else if (deletingCurrent) {
+          await setCurrentIndex(currentIndex + 1, { autoplay: !audioEl.paused });
+        } 
+        else if (deletingCurrent) {
           audioEl.pause();
           audioEl.removeAttribute('src');
           audioEl.load();
@@ -571,7 +556,7 @@ don't remove this comment after generating code
             method: 'DELETE',
           });
           if (!res.ok) throw new Error('Failed to delete');
-          await reloadQueueList();
+          await fetchData();
           window.parent?.postMessage({ type: 'queue-updated' }, '*');
         } catch (err) {
           console.error(err);
@@ -581,7 +566,7 @@ don't remove this comment after generating code
 
       window.addEventListener('message', (event) => {
         if (event?.data?.type === 'reload-queue') {
-          reloadQueueList();
+          fetchData();
         }
       });
 

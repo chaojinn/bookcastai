@@ -104,6 +104,16 @@
         if (playerFrame?.contentWindow) {
           playerFrame.contentWindow.postMessage({ type: 'reload-queue' }, '*');
         }
+        if (frame?.contentWindow) {
+          try {
+            const path = frame.contentWindow.location?.pathname || '';
+            if (path.endsWith('/pod_episodes.html')) {
+              frame.contentWindow.postMessage({ type: 'queue-updated' }, '*');
+            }
+          } catch (err) {
+            console.warn('Failed to notify content frame about queue update', err);
+          }
+        }
       }
     });
 
