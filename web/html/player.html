@@ -108,7 +108,7 @@ don't remove this comment after generating code
 
       let queue = [];
       let pods = [];
-      let currentIndex = 0;
+      let currentEpisode = '';
       let pendingSeek = 0;
       let shouldAutoplay = false;
       let userSeeking = false;
@@ -157,6 +157,21 @@ don't remove this comment after generating code
         };
       }
 
+      function getEpisodeKey(item) {
+        if (!item) return '';
+        return `${item.pod_id}_${item.episode_idx}`;
+      }
+
+      function getCurrentIndex() {
+        if (!currentEpisode) return -1;
+        return queue.findIndex(item => getEpisodeKey(item) === currentEpisode);
+      }
+
+      function getCurrentItem() {
+        const idx = getCurrentIndex();
+        return idx >= 0 ? queue[idx] : null;
+      }
+
       async function updateQueueCurrentFlag(item, isCurrent) {
         if (!item) return;
         try {
@@ -201,7 +216,8 @@ don't remove this comment after generating code
         if (progressSaveTimer) return;
         progressSaveTimer = window.setInterval(() => {
           if (!queue.length || audioEl.paused) return;
-          const item = queue[currentIndex];
+          const item = getCurrentItem();
+          if (!item) return;
           void updateQueueStartPos(item, audioEl.currentTime || 0);
         }, 10000);
       }
@@ -212,29 +228,30 @@ don't remove this comment after generating code
         progressSaveTimer = null;
       }
 
-      function ensureFirstCurrentFlag() {
+      async function ensureFirstCurrentFlag() {
         if (queue.length === 1 && !queue[0].is_current) {
           queue[0].is_current = true;
-          void updateQueueCurrentFlag(queue[0], true);
+          await updateQueueCurrentFlag(queue[0], true);
         }
       }
 
       async function setCurrentIndex(nextIndex, { autoplay = false } = {}) {
         if (nextIndex < 0 || nextIndex >= queue.length) return;
-        const prevIndex = currentIndex;
+        const prevIndex = getCurrentIndex();
         const nextItem = queue[nextIndex];
         if (nextIndex === prevIndex) {
           if (nextItem && !nextItem.is_current) {
             nextItem.is_current = true;
             await updateQueueCurrentFlag(nextItem, true);
           }
+          currentEpisode = getEpisodeKey(nextItem);
           loadCurrentTrack({ autoplay });
           return;
         }
         const prevItem = queue[prevIndex];
         if (prevItem) prevItem.is_current = false;
         if (nextItem) nextItem.is_current = true;
-        currentIndex = nextIndex;
+        currentEpisode = getEpisodeKey(nextItem);
         loadCurrentTrack({ autoplay });
         await Promise.all([
           updateQueueCurrentFlag(prevItem, false),
@@ -243,7 +260,7 @@ don't remove this comment after generating code
       }
 
       function updateTitles() {
-        const item = queue[currentIndex];
+        const item = getCurrentItem();
         if (!item) {
           titleSmall.textContent = 'Nothing queued';
           titleLarge.textContent = 'Nothing queued';
@@ -271,10 +288,11 @@ don't remove this comment after generating code
           queueListEl.appendChild(empty);
           return;
         }
+        const currentIdx = getCurrentIndex();
         queue.forEach((item, idx) => {
           const ep = resolveEpisode(item);
           const li = document.createElement('li');
-          if (idx === currentIndex) li.classList.add('active');
+          if (idx === currentIdx) li.classList.add('active');
           const info = document.createElement('div');
           const title = document.createElement('div');
           title.className = 'queue-item-title';
@@ -311,9 +329,10 @@ don't remove this comment after generating code
 
       function updateControlsState() {
         const hasQueue = queue.length > 0;
+        const currentIdx = getCurrentIndex();
         playBtn.disabled = !hasQueue;
-        prevBtn.disabled = !hasQueue || currentIndex === 0;
-        nextBtn.disabled = !hasQueue || currentIndex >= queue.length - 1;
+        prevBtn.disabled = !hasQueue || currentIdx <= 0;
+        nextBtn.disabled = !hasQueue || currentIdx === -1 || currentIdx >= queue.length - 1;
         rewindBtn.disabled = !hasQueue;
         forwardBtn.disabled = !hasQueue;
         restartBtn.disabled = !hasQueue;
@@ -339,14 +358,16 @@ don't remove this comment after generating code
       }
 
       function loadCurrentTrack({ autoplay = false } = {}) {
-        const item = queue[currentIndex];
+        const item = getCurrentItem();
         if (!item) {
+          currentEpisode = '';
           audioEl.removeAttribute('src');
           updateTitles();
           updateControlsState();
           setStatus('Queue is empty.');
           return;
         }
+        currentEpisode = getEpisodeKey(item);
         const ep = resolveEpisode(item);
         if (!ep.audioUrl) {
           setStatus('No audio URL found for this episode.');
@@ -365,7 +386,7 @@ don't remove this comment after generating code
       }
 
       async function fetchData() {
-        const currentIdxValue = queue[currentIndex]?.idx;
+        const previousEpisode = currentEpisode;
         setStatus('Loading queue...');
         try {
           const [podsRes, queueRes] = await Promise.all([
@@ -376,20 +397,41 @@ don't remove this comment after generating code
           if (!queueRes.ok) throw new Error('Failed to fetch queue');
           pods = await podsRes.json();
           queue = await queueRes.json();
+          if (!queue.length) {
+            currentEpisode = '';
+            audioEl.pause();
+            audioEl.removeAttribute('src');
+            audioEl.load();
+            renderQueue();
+            updateTitles();
+            updateControlsState();
+            setStatus('Queue is empty.');
+            return;
+          }
+
           const flaggedIdx = queue.findIndex(item => item.is_current);
           if (flaggedIdx >= 0) {
-            currentIndex = flaggedIdx;
-          } else if (typeof currentIdxValue === 'number') {
-            const foundIdx = queue.findIndex(item => item.idx === currentIdxValue);
-            currentIndex = foundIdx >= 0 ? foundIdx : 0;
+            currentEpisode = getEpisodeKey(queue[flaggedIdx]);
+          } else if (previousEpisode) {
+            const foundIdx = queue.findIndex(item => getEpisodeKey(item) === previousEpisode);
+            if (foundIdx >= 0) {
+              currentEpisode = previousEpisode;
+            } else {
+              currentEpisode = getEpisodeKey(queue[0]);
+            }
           } else {
-            currentIndex = 0;
+            currentEpisode = getEpisodeKey(queue[0]);
           }
-          ensureFirstCurrentFlag();
+
+          await ensureFirstCurrentFlag();
           renderQueue();
           updateTitles();
           updateControlsState();
-          loadCurrentTrack({ autoplay: false });
+          if (currentEpisode !== previousEpisode) {
+            
+            loadCurrentTrack({ autoplay: false });
+          }
+
           setStatus(queue.length ? 'Ready.' : 'Queue is empty.');
         } catch (err) {
           console.error(err);
@@ -421,9 +463,11 @@ don't remove this comment after generating code
 
       restartBtn.addEventListener('click', () => {
         if (!queue.length) return;
+        const currentIdx = getCurrentIndex();
+        if (currentIdx < 0) return;
         audioEl.currentTime = 0;
         updateTime();
-        void updateQueueStartPos(queue[currentIndex], 0);
+        void updateQueueStartPos(queue[currentIdx], 0);
         if (audioEl.paused && shouldAutoplay) {
           audioEl.play().catch(() => {});
         }
@@ -431,35 +475,42 @@ don't remove this comment after generating code
 
       rewindBtn.addEventListener('click', () => {
         if (!queue.length) return;
+        const currentIdx = getCurrentIndex();
+        if (currentIdx < 0) return;
         audioEl.currentTime = Math.max(0, (audioEl.currentTime || 0) - 10);
         updateTime();
-        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+        void updateQueueStartPos(queue[currentIdx], audioEl.currentTime || 0);
       });
 
       forwardBtn.addEventListener('click', () => {
         if (!queue.length) return;
+        const currentIdx = getCurrentIndex();
+        if (currentIdx < 0) return;
         const duration = Number.isFinite(audioEl.duration) ? audioEl.duration : (audioEl.currentTime || 0) + 10;
         audioEl.currentTime = Math.min(duration, (audioEl.currentTime || 0) + 10);
         updateTime();
-        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+        void updateQueueStartPos(queue[currentIdx], audioEl.currentTime || 0);
       });
 
       nextBtn.addEventListener('click', () => {
-        if (currentIndex >= queue.length - 1) return;
-        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
-        void setCurrentIndex(currentIndex + 1, { autoplay: true });
+        const currentIdx = getCurrentIndex();
+        if (currentIdx < 0 || currentIdx >= queue.length - 1) return;
+        void updateQueueStartPos(queue[currentIdx], audioEl.currentTime || 0);
+        void setCurrentIndex(currentIdx + 1, { autoplay: true });
       });
 
       prevBtn.addEventListener('click', () => {
         if (!queue.length) return;
-        if (currentIndex === 0) {
+        const currentIdx = getCurrentIndex();
+        if (currentIdx < 0) return;
+        if (currentIdx === 0) {
           audioEl.currentTime = 0;
           updateTime();
-          void updateQueueStartPos(queue[currentIndex], 0);
+          void updateQueueStartPos(queue[currentIdx], 0);
           return;
         }
-        void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
-        void setCurrentIndex(currentIndex - 1, { autoplay: true });
+        void updateQueueStartPos(queue[currentIdx], audioEl.currentTime || 0);
+        void setCurrentIndex(currentIdx - 1, { autoplay: true });
       });
 
       toggleModeBtn.addEventListener('click', toggleMode);
@@ -489,16 +540,23 @@ don't remove this comment after generating code
         setStatus('Paused.');
         stopProgressSaver();
         if (queue.length) {
-          void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+          const currentItem = getCurrentItem();
+          if (currentItem) {
+            void updateQueueStartPos(currentItem, audioEl.currentTime || 0);
+          }
         }
       });
       audioEl.addEventListener('ended', () => {
         stopProgressSaver();
         if (queue.length) {
-          void updateQueueStartPos(queue[currentIndex], audioEl.currentTime || 0);
+          const currentItem = getCurrentItem();
+          if (currentItem) {
+            void updateQueueStartPos(currentItem, audioEl.currentTime || 0);
+          }
         }
-        if (currentIndex < queue.length - 1) {
-          void setCurrentIndex(currentIndex + 1, { autoplay: true });
+        const currentIdx = getCurrentIndex();
+        if (currentIdx >= 0 && currentIdx < queue.length - 1) {
+          void setCurrentIndex(currentIdx + 1, { autoplay: true });
         } else {
           setStatus('Reached end of queue.');
           updatePlayIcon();
@@ -520,7 +578,10 @@ don't remove this comment after generating code
         audioEl.currentTime = val;
         updateTime();
         if (queue.length) {
-          void updateQueueStartPos(queue[currentIndex], val);
+          const currentItem = getCurrentItem();
+          if (currentItem) {
+            void updateQueueStartPos(currentItem, val);
+          }
         }
       });
 
@@ -536,10 +597,11 @@ don't remove this comment after generating code
         if (!idx) return;
         const idxNum = Number(idx);
         if (!Number.isFinite(idxNum)) return;
-        const deletingCurrent = queue[currentIndex]?.idx === idxNum;
-        const hasNext = deletingCurrent && currentIndex < queue.length - 1;
+        const currentIdx = getCurrentIndex();
+        const deletingCurrent = queue[currentIdx]?.idx === idxNum;
+        const hasNext = deletingCurrent && currentIdx < queue.length - 1;
         if (deletingCurrent && hasNext) {
-          await setCurrentIndex(currentIndex + 1, { autoplay: !audioEl.paused });
+          await setCurrentIndex(currentIdx + 1, { autoplay: !audioEl.paused });
         } 
         else if (deletingCurrent) {
           audioEl.pause();
