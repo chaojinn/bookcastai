@@ -227,11 +227,22 @@ audio {
   display: none;
 }
 @media (max-width: 640px) {
+  .collapsed-only {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .collapsed-only .subtitle {
+    margin-top: 0;
+  }
+  #title-sm {
+    font-size: 16px;
+  }
   .control-bar {
     grid-template-columns: repeat(3, 1fr);
   }
   .icon-btn {
-    height: 38px;
+    height: 30px;
     font-size: 0.95rem;
     border-radius: 10px;
   }
