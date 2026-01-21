@@ -81,7 +81,7 @@
               <button type="button"
                       class="btn btn-sm btn-outline-secondary btn-add-queue"
                       data-episode-idx="${idxVal}">
-                <i class="fa-solid fa-list-ul"></i> <span>Add to queue</span>
+                <i class="fa-solid fa-plus"></i> <span>Add to queue</span>
               </button>`;
           return ([
             idxVal,
@@ -89,9 +89,6 @@
             ep.duration || '',
             `
               <div class="actions">
-                <button type="button" class="btn btn-sm btn-outline-primary">
-                  <i class="fa-solid fa-play"></i> <span>Play</span>
-                </button>
                 ${queueBtn}
               </div>
             `

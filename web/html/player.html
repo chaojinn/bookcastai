@@ -76,7 +76,6 @@ don't remove this comment after generating code
       <ul id="queue-list"></ul>
     </div>
 
-    <div class="status-line" id="status-line"></div>
     <audio id="audio-player" preload="auto"></audio>
   </div>
 
@@ -98,7 +97,6 @@ don't remove this comment after generating code
       const queueCountEl = document.getElementById('queue-count');
       const timeReadout = document.getElementById('time-readout');
       const progressEl = document.getElementById('progress');
-      const statusLine = document.getElementById('status-line');
       const titleSmall = document.getElementById('title-sm');
       const titleLarge = document.getElementById('title-lg');
       const metaSmall = document.getElementById('meta-sm');
@@ -120,11 +118,6 @@ don't remove this comment after generating code
         } catch (err) {
           console.warn('Failed to notify parent', err);
         }
-      }
-
-      function setStatus(message, variant = 'muted') {
-        statusLine.textContent = message || '';
-        statusLine.style.color = variant === 'muted' ? '#94a3b8' : '#f8fafc';
       }
 
       function formatSeconds(seconds) {
@@ -272,7 +265,7 @@ don't remove this comment after generating code
         const start = formatSeconds(Number(item.start_pos) || 0);
         titleSmall.textContent = ep.title;
         titleLarge.textContent = ep.title;
-        const meta = `${ep.podTitle} • Start at ${start}${ep.durationLabel ? ' / ' + ep.durationLabel : ''}`;
+        const meta = `${ep.podTitle}`;
         metaSmall.textContent = meta;
         metaLarge.textContent = meta;
       }
@@ -364,13 +357,11 @@ don't remove this comment after generating code
           audioEl.removeAttribute('src');
           updateTitles();
           updateControlsState();
-          setStatus('Queue is empty.');
           return;
         }
         currentEpisode = getEpisodeKey(item);
         const ep = resolveEpisode(item);
         if (!ep.audioUrl) {
-          setStatus('No audio URL found for this episode.');
           return;
         }
         shouldAutoplay = autoplay;
@@ -382,12 +373,10 @@ don't remove this comment after generating code
         updateTitles();
         updateControlsState();
         renderQueue();
-        setStatus(autoplay ? 'Playing...' : 'Ready.');
       }
 
       async function fetchData() {
         const previousEpisode = currentEpisode;
-        setStatus('Loading queue...');
         try {
           const [podsRes, queueRes] = await Promise.all([
             fetchWithRefresh('/api/get_pods'),
@@ -405,7 +394,6 @@ don't remove this comment after generating code
             renderQueue();
             updateTitles();
             updateControlsState();
-            setStatus('Queue is empty.');
             return;
           }
 
@@ -432,10 +420,8 @@ don't remove this comment after generating code
             loadCurrentTrack({ autoplay: false });
           }
 
-          setStatus(queue.length ? 'Ready.' : 'Queue is empty.');
         } catch (err) {
           console.error(err);
-          setStatus('Failed to load player data.');
         }
       }
 
@@ -455,7 +441,7 @@ don't remove this comment after generating code
       playBtn.addEventListener('click', () => {
         if (!queue.length) return;
         if (audioEl.paused) {
-          audioEl.play().catch(() => setStatus('Tap play to resume.', 'muted'));
+          audioEl.play().catch(() => {});
         } else {
           audioEl.pause();
         }
@@ -524,7 +510,7 @@ don't remove this comment after generating code
         }
         updateTime();
         if (shouldAutoplay) {
-          audioEl.play().catch(() => setStatus('Autoplay blocked; press play.', 'muted'));
+          audioEl.play().catch(() => {});
         }
         shouldAutoplay = false;
       });
@@ -532,12 +518,10 @@ don't remove this comment after generating code
       audioEl.addEventListener('timeupdate', () => updateTime());
       audioEl.addEventListener('play', () => {
         updatePlayIcon();
-        setStatus('Playing...');
         startProgressSaver();
       });
       audioEl.addEventListener('pause', () => {
         updatePlayIcon();
-        setStatus('Paused.');
         stopProgressSaver();
         if (queue.length) {
           const currentItem = getCurrentItem();
@@ -558,7 +542,6 @@ don't remove this comment after generating code
         if (currentIdx >= 0 && currentIdx < queue.length - 1) {
           void setCurrentIndex(currentIdx + 1, { autoplay: true });
         } else {
-          setStatus('Reached end of queue.');
           updatePlayIcon();
         }
       });
@@ -609,7 +592,6 @@ don't remove this comment after generating code
           audioEl.load();
           updateTitles();
           updateControlsState();
-          setStatus('Queue is empty.');
           window.parent?.postMessage({ type: 'hide-player-iframe' }, '*');
         }
 
@@ -622,7 +604,6 @@ don't remove this comment after generating code
           window.parent?.postMessage({ type: 'queue-updated' }, '*');
         } catch (err) {
           console.error(err);
-          setStatus('Failed to remove from queue.', 'danger');
         }
       });
 

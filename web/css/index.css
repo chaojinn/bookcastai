@@ -84,7 +84,6 @@ body {
   flex: 1;
   min-height: 0;
   padding: 12px;
-  padding-bottom: 72px;
   display: flex;
   flex-direction: column;
   gap: 10px;
