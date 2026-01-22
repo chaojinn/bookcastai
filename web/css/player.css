@@ -231,12 +231,19 @@ audio {
     display: flex;
     align-items: baseline;
     gap: 8px;
+    min-width: 0;
   }
   .collapsed-only .subtitle {
     margin-top: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   #title-sm {
     font-size: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .control-bar {
     grid-template-columns: repeat(3, 1fr);
