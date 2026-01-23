@@ -1,0 +1,169 @@
+<!--
+this page should use book_upload.css under css folder for styling, create empty style file if not exist
+this page should use jquery and bootstrap in the same style as index.html
+this page will have a responsive design and look proper on all device sizes
+this page will have:
+a botton to select a file from local disk for upload
+a text box showing the name of the selected file name(not whole path, only the selected file name), any space should be removed from the file name, the textbox should be editable
+a separate button to uploaded (disabled unless file is selected)
+
+upload.py should be created under api folder to handle file upload and check file/folder exists
+
+when a file is choosen, filename textbox will be filled automatically and a check should be called via API to check if folder name with same name exist under base_dir = os.getenv("PODS_BASE")
+if not exist, upload button should be enabled, otherwise upload button still enabled but a warning message for override should be displayed
+when upload button clicked, file should be upload to a folder under base_dir = os.getenv("PODS_BASE") with the folder name as the file name, create folder if not exist, the uploaded file should be saved as "book.epub" under the folder
+file upload should be done in a ajax call, if file is uploaded successfully, a success message should be displayed
+if file upload failed, an error message should be displayed
+
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upload Book</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" crossorigin="anonymous">
+  <link rel="stylesheet" href="/css/book_upload.css">
+</head>
+<body>
+  <main class="page-shell">
+    <div class="upload-card">
+      <header class="card-header">
+        <h1>Upload Book</h1>
+        <p>Select an EPUB file and upload it to your library.</p>
+      </header>
+
+      <div class="upload-form">
+        <input type="file" id="file-input" accept=".epub">
+        <div class="file-row">
+          <button type="button" class="btn btn-outline-primary" id="choose-btn">
+            <i class="fa-solid fa-folder-open"></i> Select file
+          </button>
+          <input type="text" id="file-name" class="form-control" placeholder="Selected file name">
+        </div>
+
+        <div id="override-warning" class="alert alert-warning d-none" role="alert">
+          A folder with this name already exists. Uploading will overwrite the existing book.
+        </div>
+        <div id="status-message" class="alert d-none" role="alert"></div>
+
+        <div class="actions-row">
+          <button type="button" class="btn btn-primary" id="upload-btn" disabled>
+            <i class="fa-solid fa-upload"></i> Upload
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+  <script src="/js/main.js"></script>
+  <script>
+    $(function () {
+      const fileInput = $('#file-input');
+      const fileNameInput = $('#file-name');
+      const chooseBtn = $('#choose-btn');
+      const uploadBtn = $('#upload-btn');
+      const warningEl = $('#override-warning');
+      const statusEl = $('#status-message');
+
+      function sanitizeName(raw) {
+        const base = (raw || '').split(/[/\\\\]/).pop();
+        const noExt = base.replace(/\.[^.]+$/, '');
+        return noExt.replace(/\s+/g, '').trim();
+      }
+
+      function setStatus(message, variant) {
+        if (!message) {
+          statusEl.addClass('d-none').text('');
+          return;
+        }
+        statusEl
+          .removeClass('d-none alert-success alert-danger alert-info')
+          .addClass(`alert-${variant || 'info'}`)
+          .text(message);
+      }
+
+      function setWarning(show) {
+        warningEl.toggleClass('d-none', !show);
+      }
+
+      async function checkFolder(name) {
+        if (!name) return;
+        try {
+          const res = await fetchWithRefresh(`/api/upload/check?name=${encodeURIComponent(name)}`);
+          if (!res.ok) throw new Error('Folder check failed');
+          const data = await res.json();
+          setWarning(!!data.exists);
+        } catch (err) {
+          console.warn(err);
+          setWarning(false);
+          setStatus('Unable to verify folder name. Please try again.', 'danger');
+        }
+      }
+
+      chooseBtn.on('click', () => fileInput.trigger('click'));
+
+      fileInput.on('change', () => {
+        const file = fileInput[0].files?.[0];
+        if (!file) {
+          fileNameInput.val('');
+          uploadBtn.prop('disabled', true);
+          setWarning(false);
+          setStatus('', 'info');
+          return;
+        }
+        const cleaned = sanitizeName(file.name);
+        fileNameInput.val(cleaned);
+        uploadBtn.prop('disabled', !cleaned);
+        setWarning(false);
+        setStatus('', 'info');
+        checkFolder(cleaned);
+      });
+
+      fileNameInput.on('input', () => {
+        const cleaned = sanitizeName(fileNameInput.val());
+        fileNameInput.val(cleaned);
+        const hasFile = !!fileInput[0].files?.length;
+        uploadBtn.prop('disabled', !(hasFile && cleaned));
+        setWarning(false);
+        if (cleaned) checkFolder(cleaned);
+      });
+
+      uploadBtn.on('click', async () => {
+        const file = fileInput[0].files?.[0];
+        const folderName = sanitizeName(fileNameInput.val());
+        if (!file) {
+          setStatus('Please select a file to upload.', 'danger');
+          return;
+        }
+        if (!folderName) {
+          setStatus('Please enter a valid file name.', 'danger');
+          return;
+        }
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('folder_name', folderName);
+
+        uploadBtn.prop('disabled', true);
+        setStatus('Uploading...', 'info');
+        try {
+          const res = await fetchWithRefresh('/api/upload', {
+            method: 'POST',
+            body: formData
+          });
+          if (!res.ok) throw new Error('Upload failed');
+          setStatus('Upload complete!', 'success');
+        } catch (err) {
+          console.error(err);
+          setStatus('Upload failed. Please try again.', 'danger');
+        } finally {
+          uploadBtn.prop('disabled', false);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

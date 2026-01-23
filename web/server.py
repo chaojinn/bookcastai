@@ -23,6 +23,8 @@ from .api.logoff import router as logoff_router
 from .api.get_pods import router as get_pods_router
 from .api.last_location import router as last_location_router
 from .api.queue import router as queue_router
+from .api.epub import router as epub_router
+from .api.upload import router as upload_router
 
 
 def _load_env() -> None:
@@ -98,6 +100,8 @@ def _build_app() -> FastAPI:
     app.include_router(get_pods_router)
     app.include_router(last_location_router)
     app.include_router(queue_router)
+    app.include_router(epub_router)
+    app.include_router(upload_router)
 
     base_dir = Path(__file__).resolve().parent
     html_dir = base_dir / "html"

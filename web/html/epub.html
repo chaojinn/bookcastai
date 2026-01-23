@@ -1,0 +1,298 @@
+<!--
+this page should use epub.css under css folder for styling, create empty style file if not exist
+this page should use jquery and bootstrap in the same style as index.html
+this page will have a responsive design and look proper on all device sizes
+this page will have:
+a pod_title parameter passed via URI
+a button "Parse EPUB" to start parsing the EPUB file
+a code editor component from https://codemirror.net/, reference the code using cdn
+a status bar to show parsing status and error messages
+a progress bar to show parsing progress
+
+when page loaded, it should use /api/epub/{pod_title} to check if the EPUB file exists, /api/epub/{pod_title} should be implemented in api/epub.py
+/api/epub/{pod_title} should check if base_dir/{pod_title}/book.epub exists (base_dir = os.getenv("PODS_BASE")), if not exist, return 404, else return 200 
+if file exists, enable "Parse EPUB" button, otherwise disable it and show error message "EPUB file not found"
+if book.epub exists, use /api/epub_result/{pod_title} to check if base_dir/{pod_title}/book.json exists,
+if not return 404, else return the content of book.json and display it in code editor
+
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EPUB Parser</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.css" crossorigin="anonymous">
+  <link rel="stylesheet" href="/css/epub.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="page-header">
+      <div>
+        <h1>EPUB Parser</h1>
+        <p class="subtitle">Pod: <span id="pod-title">Unknown</span></p>
+      </div>
+      <button class="btn btn-primary" id="parse-btn" disabled>
+        <i class="fa-solid fa-wand-magic-sparkles"></i> Parse EPUB
+      </button>
+    </header>
+
+    <section class="panel">
+      <div class="controls">
+        <div class="progress d-none" role="progressbar" aria-label="Parsing progress">
+          <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+        </div>
+      </div>
+      <div id="status-bar" class="status-bar">Ready.</div>
+    </section>
+
+    <section class="editor-card">
+      <textarea id="editor" aria-label="EPUB JSON output"></textarea>
+    </section>
+  </main>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldcode.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/brace-fold.min.js" crossorigin="anonymous"></script>
+  <script src="/js/main.js"></script>
+  <script>
+    $(function () {
+      const params = new URLSearchParams(window.location.search);
+      const podTitle = params.get('pod_title');
+
+      const podTitleEl = $('#pod-title');
+      const parseBtn = $('#parse-btn');
+      const statusBar = $('#status-bar');
+      const progressBar = $('#progress-bar');
+      const progressWrap = $('.progress');
+
+      const editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
+        lineNumbers: true,
+        mode: { name: 'javascript', json: true },
+        lineWrapping: true,
+        theme: 'default',
+        foldGutter: true,
+        gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter']
+      });
+
+      function findFirstLevelFoldPositions(text) {
+        const positions = [];
+        let line = 0;
+        let ch = 0;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+
+        for (let i = 0; i < text.length; i += 1) {
+          const c = text[i];
+          if (c === '\n') {
+            line += 1;
+            ch = 0;
+            continue;
+          }
+          if (c === '\r') {
+            continue;
+          }
+          if (inString) {
+            if (escaped) {
+              escaped = false;
+            } else if (c === '\\') {
+              escaped = true;
+            } else if (c === '"') {
+              inString = false;
+            }
+          } else if (c === '"') {
+            inString = true;
+          } else if (c === '{' || c === '[') {
+            if (depth === 1) {
+              positions.push({ line, ch });
+            }
+            depth += 1;
+          } else if (c === '}' || c === ']') {
+            if (depth > 0) depth -= 1;
+          }
+          ch += 1;
+        }
+
+        return positions;
+      }
+
+      function applyInitialFolds() {
+        const text = editor.getValue();
+        if (!text) return;
+        editor.operation(() => {
+          editor.execCommand('unfoldAll');
+          const positions = findFirstLevelFoldPositions(text);
+          positions.forEach((pos) => editor.foldCode(pos, null, 'fold'));
+        });
+      }
+
+      function setStatus(message, variant) {
+        statusBar
+          .removeClass('status-error status-success status-info')
+          .addClass(variant ? `status-${variant}` : '')
+          .text(message || '');
+      }
+
+      function startProgress() {
+        progressWrap.removeClass('d-none');
+        progressBar
+          .addClass('progress-bar-striped progress-bar-animated')
+          .css('width', '0%');
+      }
+
+      function stopProgress() {
+        progressBar
+          .removeClass('progress-bar-striped progress-bar-animated')
+          .css('width', '0%');
+        progressWrap.addClass('d-none');
+      }
+
+      function updateProgress(value) {
+        const numeric = Number(value);
+        const clamped = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
+        progressBar.css('width', `${clamped}%`);
+        return Math.round(clamped);
+      }
+
+      function setJobStatus(status, progress, message) {
+        const percent = updateProgress(progress);
+        const text = message ? `${percent}% - ${message}` : `${percent}%`;
+        if (status === 'success') {
+          setStatus(text, 'success');
+          return;
+        }
+        if (status === 'fail' || status === 'cancelled') {
+          setStatus(text, 'error');
+          return;
+        }
+        setStatus(text, 'info');
+      }
+
+      async function loadResult({ setEmptyStatus = false } = {}) {
+        if (!podTitle) return false;
+        try {
+          const res = await fetchWithRefresh(`/api/epub_result/${encodeURIComponent(podTitle)}`);
+          if (res.ok) {
+            const text = await res.text();
+            editor.setValue(text || '');
+            applyInitialFolds();
+            setStatus('Loaded parsed JSON output.', 'success');
+            return true;
+          }
+          if (res.status === 404) {
+            if (setEmptyStatus) {
+              setStatus('No parsed output found yet.', 'info');
+            }
+            return false;
+          }
+          throw new Error('Unexpected response');
+        } catch (err) {
+          console.warn('Failed to load EPUB result', err);
+          setStatus('Failed to load parsed output.', 'error');
+          return false;
+        }
+      }
+
+      async function checkEpub() {
+        if (!podTitle) {
+          setStatus('Missing pod_title in URL.', 'error');
+          parseBtn.prop('disabled', true);
+          return;
+        }
+        podTitleEl.text(podTitle);
+        setStatus('Checking EPUB...', 'info');
+        try {
+          const res = await fetchWithRefresh(`/api/epub/${encodeURIComponent(podTitle)}`);
+          if (res.ok) {
+            parseBtn.prop('disabled', false);
+            await loadResult({ setEmptyStatus: true });
+            return;
+          }
+          if (res.status === 404) {
+            parseBtn.prop('disabled', true);
+            setStatus('EPUB file not found', 'error');
+            return;
+          }
+          throw new Error('Unexpected response');
+        } catch (err) {
+          console.warn('Failed to check EPUB file', err);
+          parseBtn.prop('disabled', true);
+          setStatus('Failed to check EPUB file.', 'error');
+        }
+      }
+
+      let jobPollTimer = null;
+      async function pollJob(jobId) {
+        if (!jobId) return;
+        try {
+          const res = await fetchWithRefresh(`/api/job/${encodeURIComponent(jobId)}`);
+          if (!res.ok) throw new Error('Job status request failed');
+          const data = await res.json();
+          const status = data.status || 'queued';
+          const progress = typeof data.progress === 'number' ? data.progress : 0;
+          const message = data.progress_msg || '';
+          setJobStatus(status, progress, message);
+
+          if (status === 'success') {
+            await loadResult();
+            stopProgress();
+            parseBtn.prop('disabled', false);
+            return;
+          }
+          if (status === 'fail' || status === 'cancelled') {
+            stopProgress();
+            parseBtn.prop('disabled', false);
+            return;
+          }
+          jobPollTimer = setTimeout(() => pollJob(jobId), 1000);
+        } catch (err) {
+          console.warn('Failed to poll job status', err);
+          setStatus('Failed to fetch job status.', 'error');
+          stopProgress();
+          parseBtn.prop('disabled', false);
+        }
+      }
+
+      parseBtn.on('click', async () => {
+        if (!podTitle) return;
+        setStatus('Starting parse...', 'info');
+        startProgress();
+        parseBtn.prop('disabled', true);
+        try {
+          const res = await fetchWithRefresh('/api/job', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              command: 'parse_epub',
+              params: [{ key: 'book_title', value: podTitle }]
+            })
+          });
+          if (!res.ok) throw new Error('Parse request failed');
+          const data = await res.json();
+          const jobId = data.id;
+          if (!jobId) throw new Error('Missing job id');
+          setStatus('Parsing started. Waiting for output...', 'info');
+          setJobStatus('queued', 0, 'Queued.');
+          if (jobPollTimer) clearTimeout(jobPollTimer);
+          pollJob(jobId);
+        } catch (err) {
+          console.warn('Failed to start parsing', err);
+          setStatus('Failed to start parsing.', 'error');
+          stopProgress();
+          parseBtn.prop('disabled', false);
+        }
+      });
+
+      checkEpub();
+    });
+  </script>
+</body>
+</html>

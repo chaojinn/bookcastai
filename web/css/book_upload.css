@@ -1,0 +1,93 @@
+:root {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --text: #1f2a44;
+  --muted: #5a6787;
+  --border: #e6e9f2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", Tahoma, sans-serif;
+}
+
+.page-shell {
+  max-width: 720px;
+  margin: 32px auto;
+  padding: 0 16px 32px;
+}
+
+.upload-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 12px 30px rgba(31, 42, 68, 0.08);
+  padding: 24px;
+}
+
+.card-header h1 {
+  margin: 0 0 6px;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.card-header p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.upload-form {
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#file-input {
+  display: none;
+}
+
+.file-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.file-row .form-control {
+  flex: 1;
+}
+
+.actions-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+  .page-shell {
+    margin: 20px auto;
+  }
+
+  .upload-card {
+    padding: 18px;
+  }
+
+  .file-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .actions-row {
+    justify-content: stretch;
+  }
+
+  .actions-row .btn {
+    width: 100%;
+  }
+}

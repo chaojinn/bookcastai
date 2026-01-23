@@ -1,0 +1,135 @@
+:root {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --text: #1f2a44;
+  --muted: #5a6787;
+  --border: #e6e9f2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", Tahoma, sans-serif;
+}
+
+.page-shell {
+  max-width: 1100px;
+  margin: 24px auto;
+  padding: 0 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.page-header h1 {
+  margin: 0 0 4px;
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 12px 30px rgba(31, 42, 68, 0.08);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.progress {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #eef2f7;
+}
+
+.progress-bar {
+  background: linear-gradient(135deg, #6b7bff, #4e60e6);
+}
+
+.status-bar {
+  margin-top: 10px;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.status-bar.status-success {
+  color: #0f766e;
+}
+
+.status-bar.status-error {
+  color: #b91c1c;
+}
+
+.status-bar.status-info {
+  color: #475569;
+}
+
+.editor-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 12px 30px rgba(31, 42, 68, 0.08);
+}
+
+.CodeMirror {
+  height: 60vh;
+  min-height: 320px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 720px) {
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .page-header .btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .page-shell {
+    margin: 16px auto;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .CodeMirror {
+    height: 50vh;
+  }
+}
