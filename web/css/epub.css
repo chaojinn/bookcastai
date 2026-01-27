@@ -97,6 +97,111 @@ body {
   box-shadow: 0 12px 30px rgba(31, 42, 68, 0.08);
 }
 
+.editor-card.is-hidden {
+  display: none;
+}
+
+.cover-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 12px 30px rgba(31, 42, 68, 0.08);
+}
+
+.cover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cover-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.cover-frame {
+  width: 100%;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8f9fc;
+}
+
+.cover-image {
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+}
+
+.cover-placeholder {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.summary-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 12px 30px rgba(31, 42, 68, 0.08);
+}
+
+.summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.summary-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.summary-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+}
+
+.summary-item {
+  background: #f8f9fc;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.summary-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.summary-value {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
 .CodeMirror {
   height: 60vh;
   min-height: 320px;
@@ -112,6 +217,11 @@ body {
 
   .page-header .btn {
     width: 100%;
+  }
+
+  .summary-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 
@@ -131,5 +241,9 @@ body {
 
   .CodeMirror {
     height: 50vh;
+  }
+
+  .summary-grid {
+    grid-template-columns: 1fr;
   }
 }

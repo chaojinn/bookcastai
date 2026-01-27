@@ -255,6 +255,9 @@ async def _handle_parse_epub(job: Job) -> None:
     ignore_classes = _normalize_ignore_classes(params.get("ignore_classes"))
     ai_extract_text = _to_bool(params.get("ai_extract_text"))
 
+    def publish_progress(progress: int, message: str | None = None) -> None:
+        _set_progress(job, progress, message or "")
+
     try:
         from agent.epub_agent import run_epub_agent
     except ImportError as exc:
@@ -269,7 +272,12 @@ async def _handle_parse_epub(job: Job) -> None:
             kwargs["chunk_size"] = chunk_size
         if ignore_classes is not None:
             kwargs["ignore_classes"] = ignore_classes
-        await asyncio.to_thread(run_epub_agent, book_title, **kwargs)
+        await asyncio.to_thread(
+            run_epub_agent,
+            book_title,
+            publish_progress=publish_progress,
+            **kwargs,
+        )
     except Exception as exc:
         logger.exception("parse_epub job failed for %s", job.id)
         job.status = "fail"

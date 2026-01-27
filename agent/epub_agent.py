@@ -5,7 +5,7 @@ import logging
 import sys
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from dotenv import load_dotenv
 
@@ -86,6 +86,7 @@ def _build_graph(
     chunk_size: int,
     ignore_classes: Optional[List[str]] = None,
     ai_extract_text: bool = False,
+    publish_progress: Optional[Callable[[int, str], None]] = None,
 ) -> StateGraph:
     graph = StateGraph(EPUBAgentState)
     normalized_chunk_size = max(1, chunk_size)
@@ -106,15 +107,51 @@ def _build_graph(
         default_chunk_size=normalized_chunk_size,
     )
     assemble_payload = make_assemble_payload_node()
-    
-    graph.add_node("fetch_metadata", fetch_metadata)
-    graph.add_node("fetch_table_of_contents", fetch_table_of_contents)
-    graph.add_node("fetch_chapter_content", fetch_chapter_content)
-    graph.add_node("construct_book_structure", construct_book_structure)
-    graph.add_node("normalize_titles", normalize_titles)
-    graph.add_node("normalize_first_sentence", normalize_first_sentence)
-    graph.add_node("chunk_chapter_content", chunk_chapter_content)
-    graph.add_node("assemble_payload", assemble_payload)
+
+    node_sequence = [
+        ("fetch_metadata", "Fetched metadata"),
+        ("fetch_table_of_contents", "Fetched table of contents"),
+        ("fetch_chapter_content", "Fetched chapter content"),
+        ("construct_book_structure", "Constructed book structure"),
+        ("normalize_titles", "Normalized titles"),
+        ("normalize_first_sentence", "Normalized first sentences"),
+        ("chunk_chapter_content", "Chunked chapter content"),
+        ("assemble_payload", "Assembled payload"),
+    ]
+    total_nodes = len(node_sequence)
+
+    def _wrap_node(
+        name: str,
+        node_fn: Callable[[EPUBAgentState], EPUBAgentState],
+        index: int,
+        message: str,
+    ) -> Callable[[EPUBAgentState], EPUBAgentState]:
+        def _wrapped(state: EPUBAgentState) -> EPUBAgentState:
+            result = node_fn(state)
+            if publish_progress is not None:
+                try:
+                    progress = int(round(((index + 1) / total_nodes) * 100))
+                    publish_progress(progress, message)
+                except Exception:  # pragma: no cover - safety
+                    logger.exception("Progress callback failed for node %s", name)
+            return result
+
+        return _wrapped
+
+    node_map: Dict[str, Callable[[EPUBAgentState], EPUBAgentState]] = {
+        "fetch_metadata": fetch_metadata,
+        "fetch_table_of_contents": fetch_table_of_contents,
+        "fetch_chapter_content": fetch_chapter_content,
+        "construct_book_structure": construct_book_structure,
+        "normalize_titles": normalize_titles,
+        "normalize_first_sentence": normalize_first_sentence,
+        "chunk_chapter_content": chunk_chapter_content,
+        "assemble_payload": assemble_payload,
+    }
+
+    for idx, (node_name, message) in enumerate(node_sequence):
+        node_fn = node_map[node_name]
+        graph.add_node(node_name, _wrap_node(node_name, node_fn, idx, message))
 
     graph.add_edge("__start__", "fetch_metadata")
     graph.add_edge("fetch_metadata", "fetch_table_of_contents")
@@ -139,6 +176,7 @@ class EPUBAgent:
         chunk_size: int = 2000,
         ignore_classes: Optional[List[str]] = None,
         ai_extract_text: bool = False,
+        publish_progress: Optional[Callable[[int, str], None]] = None,
     ) -> None:
         self._mcp_client = mcp_client or EbooklibEPUBMCPClient()
         self._chunk_size = max(1, chunk_size)
@@ -163,6 +201,7 @@ class EPUBAgent:
             chunk_size=self._chunk_size,
             ignore_classes=self._ignore_classes,
             ai_extract_text=self._ai_extract_text,
+            publish_progress=publish_progress,
         )
 
     def run(
@@ -209,6 +248,7 @@ def run_epub_agent(
     chunk_size: int = 2000,
     ignore_classes: Optional[List[str]] = None,
     ai_extract_text: bool = False,
+    publish_progress: Optional[Callable[[int, str], None]] = None,
 ) -> Dict[str, Any]:
     """
     Convenience wrapper that instantiates and executes the EPUB agent.
@@ -225,6 +265,8 @@ def run_epub_agent(
         Optional list of CSS class names whose elements should be ignored during text extraction.
     ai_extract_text:
         When True, send each generated chunk through the AI cleanup prompt for TTS readiness.
+    publish_progress:
+        Optional callback invoked after each node completes with (progress, progress_msg).
 
     Notes
     -----
@@ -242,6 +284,7 @@ def run_epub_agent(
         chunk_size=chunk_size,
         ignore_classes=ignore_classes,
         ai_extract_text=ai_extract_text,
+        publish_progress=publish_progress,
     )
     return agent.run(
         epub_path=epub_path,

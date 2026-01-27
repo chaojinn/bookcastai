@@ -49,7 +49,59 @@ if not return 404, else return the content of book.json and display it in code e
       <div id="status-bar" class="status-bar">Ready.</div>
     </section>
 
-    <section class="editor-card">
+    <section class="cover-card" id="cover-card" aria-live="polite">
+      <div class="cover-header">
+        <span class="cover-title">Cover image</span>
+      </div>
+      <div class="cover-frame">
+        <img id="cover-image" class="cover-image d-none" alt="EPUB cover image">
+        <div id="cover-placeholder" class="cover-placeholder">No cover image available.</div>
+      </div>
+    </section>
+
+    <section class="summary-card" id="summary-card">
+      <div class="summary-header">
+        <div>
+          <h2 class="summary-title">Summary</h2>
+          <p class="summary-subtitle">Derived from parsed JSON output.</p>
+        </div>
+        <button class="btn btn-outline-secondary btn-sm" id="show-raw-btn" type="button">
+          Show raw data
+        </button>
+      </div>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <div class="summary-label">Title</div>
+          <div id="summary-title" class="summary-value">—</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Chapters</div>
+          <div id="summary-chapters" class="summary-value">—</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">First chapter</div>
+          <div id="summary-first" class="summary-value">—</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Last chapter</div>
+          <div id="summary-last" class="summary-value">—</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Average words per chapter</div>
+          <div id="summary-average" class="summary-value">—</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Longest chapter</div>
+          <div id="summary-longest" class="summary-value">—</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Shortest chapter</div>
+          <div id="summary-shortest" class="summary-value">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="editor-card is-hidden">
       <textarea id="editor" aria-label="EPUB JSON output"></textarea>
     </section>
   </main>
@@ -72,6 +124,21 @@ if not return 404, else return the content of book.json and display it in code e
       const statusBar = $('#status-bar');
       const progressBar = $('#progress-bar');
       const progressWrap = $('.progress');
+      const coverCard = $('#cover-card');
+      const coverImage = $('#cover-image');
+      const coverPlaceholder = $('#cover-placeholder');
+      const editorCard = $('.editor-card');
+      const showRawBtn = $('#show-raw-btn');
+      const summaryTitle = $('#summary-title');
+      const summaryChapters = $('#summary-chapters');
+      const summaryFirst = $('#summary-first');
+      const summaryLast = $('#summary-last');
+      const summaryAverage = $('#summary-average');
+      const summaryLongest = $('#summary-longest');
+      const summaryShortest = $('#summary-shortest');
+
+      let rawDataAvailable = false;
+      let rawDataVisible = false;
 
       const editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
         lineNumbers: true,
@@ -176,6 +243,152 @@ if not return 404, else return the content of book.json and display it in code e
         setStatus(text, 'info');
       }
 
+      function setRawState({ available, visible } = {}) {
+        if (typeof available === 'boolean') {
+          rawDataAvailable = available;
+        }
+        if (typeof visible === 'boolean') {
+          rawDataVisible = visible;
+        }
+        if (!rawDataAvailable) {
+          editorCard.addClass('is-hidden');
+          showRawBtn.prop('disabled', true).text('Show raw data');
+          return;
+        }
+        if (rawDataVisible) {
+          editorCard.removeClass('is-hidden');
+          showRawBtn.prop('disabled', false).text('Hide raw data');
+          editor.refresh();
+          return;
+        }
+        editorCard.addClass('is-hidden');
+        showRawBtn.prop('disabled', false).text('Show raw data');
+      }
+
+      function formatWordCount(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '0';
+        return number.toLocaleString();
+      }
+
+      function countWords(text) {
+        if (typeof text !== 'string') return 0;
+        const cleaned = text.replace(/\s+/g, ' ').trim();
+        if (!cleaned) return 0;
+        return cleaned.split(' ').length;
+      }
+
+      function formatChapterLabel(chapter, fallbackNumber) {
+        const number = Number.isFinite(Number(chapter?.chapter_number))
+          ? Number(chapter.chapter_number)
+          : fallbackNumber;
+        const title = typeof chapter?.chapter_title === 'string'
+          ? chapter.chapter_title.trim()
+          : '';
+        return title ? `Chapter ${number}: ${title}` : `Chapter ${number}`;
+      }
+
+      function setSummaryEmpty() {
+        summaryTitle.text('—');
+        summaryChapters.text('—');
+        summaryFirst.text('—');
+        summaryLast.text('—');
+        summaryAverage.text('—');
+        summaryLongest.text('—');
+        summaryShortest.text('—');
+      }
+
+      function updateSummaryFromData(data) {
+        if (!data || typeof data !== 'object') {
+          setSummaryEmpty();
+          return;
+        }
+        const titleCandidate = typeof data.title === 'string' ? data.title.trim() : '';
+        const fallbackTitle = typeof data.metadata?.title === 'string' ? data.metadata.title.trim() : '';
+        const title = titleCandidate || fallbackTitle || podTitle || 'Unknown';
+        const chapters = Array.isArray(data.chapters) ? data.chapters : [];
+        summaryTitle.text(title);
+        summaryChapters.text(chapters.length ? chapters.length.toString() : '0');
+
+        if (!chapters.length) {
+          summaryFirst.text('—');
+          summaryLast.text('—');
+          summaryAverage.text('—');
+          summaryLongest.text('—');
+          summaryShortest.text('—');
+          return;
+        }
+
+        summaryFirst.text(formatChapterLabel(chapters[0], 1));
+        summaryLast.text(formatChapterLabel(chapters[chapters.length - 1], chapters.length));
+
+        let totalWords = 0;
+        let longestIndex = 0;
+        let shortestIndex = 0;
+        let longestCount = -1;
+        let shortestCount = Number.POSITIVE_INFINITY;
+
+        chapters.forEach((chapter, index) => {
+          const words = countWords(chapter?.content_text);
+          totalWords += words;
+          if (words > longestCount) {
+            longestCount = words;
+            longestIndex = index;
+          }
+          if (words < shortestCount) {
+            shortestCount = words;
+            shortestIndex = index;
+          }
+        });
+
+        const average = Math.round(totalWords / chapters.length);
+        summaryAverage.text(`${formatWordCount(average)} words`);
+        summaryLongest.text(
+          `${formatChapterLabel(chapters[longestIndex], longestIndex + 1)} — ${formatWordCount(longestCount)} words`
+        );
+        summaryShortest.text(
+          `${formatChapterLabel(chapters[shortestIndex], shortestIndex + 1)} — ${formatWordCount(shortestCount)} words`
+        );
+      }
+
+      function setCoverImage(base64, mediaType) {
+        if (typeof base64 !== 'string' || !base64.trim()) {
+          coverImage.attr('src', '').addClass('d-none');
+          coverPlaceholder.removeClass('d-none');
+          coverCard.addClass('is-empty');
+          return;
+        }
+        const trimmed = base64.trim();
+        const hasDataPrefix = trimmed.toLowerCase().startsWith('data:');
+        const type = typeof mediaType === 'string' && mediaType.trim()
+          ? mediaType.trim()
+          : 'image/jpeg';
+        const src = hasDataPrefix ? trimmed : `data:${type};base64,${trimmed}`;
+        coverImage.attr('src', src).removeClass('d-none');
+        coverPlaceholder.addClass('d-none');
+        coverCard.removeClass('is-empty');
+      }
+
+      function updateParsedOutput(text) {
+        if (!text) {
+          setCoverImage(null);
+          updateSummaryFromData(null);
+          setRawState({ available: false, visible: false });
+          return;
+        }
+        try {
+          const data = JSON.parse(text);
+          setCoverImage(data.cover_image, data.cover_image_media_type);
+          updateSummaryFromData(data);
+          setRawState({ available: true });
+        } catch (err) {
+          console.warn('Failed to parse cover image from JSON.', err);
+          setCoverImage(null);
+          updateSummaryFromData(null);
+          setRawState({ available: false, visible: false });
+        }
+      }
+
       async function loadResult({ setEmptyStatus = false } = {}) {
         if (!podTitle) return false;
         try {
@@ -184,6 +397,7 @@ if not return 404, else return the content of book.json and display it in code e
             const text = await res.text();
             editor.setValue(text || '');
             applyInitialFolds();
+            updateParsedOutput(text);
             setStatus('Loaded parsed JSON output.', 'success');
             return true;
           }
@@ -191,12 +405,17 @@ if not return 404, else return the content of book.json and display it in code e
             if (setEmptyStatus) {
               setStatus('No parsed output found yet.', 'info');
             }
+            setCoverImage(null);
+            updateSummaryFromData(null);
+            setRawState({ available: false, visible: false });
             return false;
           }
           throw new Error('Unexpected response');
         } catch (err) {
           console.warn('Failed to load EPUB result', err);
           setStatus('Failed to load parsed output.', 'error');
+          updateSummaryFromData(null);
+          setRawState({ available: false, visible: false });
           return false;
         }
       }
@@ -205,6 +424,9 @@ if not return 404, else return the content of book.json and display it in code e
         if (!podTitle) {
           setStatus('Missing pod_title in URL.', 'error');
           parseBtn.prop('disabled', true);
+          setCoverImage(null);
+          updateSummaryFromData(null);
+          setRawState({ available: false, visible: false });
           return;
         }
         podTitleEl.text(podTitle);
@@ -219,6 +441,9 @@ if not return 404, else return the content of book.json and display it in code e
           if (res.status === 404) {
             parseBtn.prop('disabled', true);
             setStatus('EPUB file not found', 'error');
+            setCoverImage(null);
+            updateSummaryFromData(null);
+            setRawState({ available: false, visible: false });
             return;
           }
           throw new Error('Unexpected response');
@@ -226,6 +451,9 @@ if not return 404, else return the content of book.json and display it in code e
           console.warn('Failed to check EPUB file', err);
           parseBtn.prop('disabled', true);
           setStatus('Failed to check EPUB file.', 'error');
+          setCoverImage(null);
+          updateSummaryFromData(null);
+          setRawState({ available: false, visible: false });
         }
       }
 
@@ -236,6 +464,8 @@ if not return 404, else return the content of book.json and display it in code e
           const res = await fetchWithRefresh(`/api/job/${encodeURIComponent(jobId)}`);
           if (!res.ok) throw new Error('Job status request failed');
           const data = await res.json();
+          console.log("job status:");
+          console.log(data);
           const status = data.status || 'queued';
           const progress = typeof data.progress === 'number' ? data.progress : 0;
           const message = data.progress_msg || '';
@@ -267,6 +497,7 @@ if not return 404, else return the content of book.json and display it in code e
         startProgress();
         parseBtn.prop('disabled', true);
         try {
+          console.log("start parsing");
           const res = await fetchWithRefresh('/api/job', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -278,9 +509,11 @@ if not return 404, else return the content of book.json and display it in code e
           if (!res.ok) throw new Error('Parse request failed');
           const data = await res.json();
           const jobId = data.id;
+          console.log("job created:", jobId);
           if (!jobId) throw new Error('Missing job id');
           setStatus('Parsing started. Waiting for output...', 'info');
           setJobStatus('queued', 0, 'Queued.');
+          setRawState({ available: false, visible: rawDataVisible });
           if (jobPollTimer) clearTimeout(jobPollTimer);
           pollJob(jobId);
         } catch (err) {
@@ -291,6 +524,12 @@ if not return 404, else return the content of book.json and display it in code e
         }
       });
 
+      showRawBtn.on('click', () => {
+        if (!rawDataAvailable) return;
+        setRawState({ visible: !rawDataVisible });
+      });
+
+      setRawState({ available: false, visible: false });
       checkEpub();
     });
   </script>
