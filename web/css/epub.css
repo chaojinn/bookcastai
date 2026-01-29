@@ -77,6 +77,31 @@ body {
   color: var(--muted);
 }
 
+.ignore-classes {
+  margin-top: 12px;
+}
+
+.ignore-classes .form-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.ignore-classes .form-control {
+  border-color: var(--border);
+  background: #f8f9fc;
+}
+
+.ignore-classes .form-control:focus {
+  border-color: #6b7bff;
+  box-shadow: 0 0 0 0.2rem rgba(107, 123, 255, 0.15);
+}
+
+.ignore-classes .form-text {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .status-bar.status-success {
   color: #0f766e;
 }

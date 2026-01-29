@@ -3,25 +3,13 @@ from __future__ import annotations
 import logging
 import subprocess
 import tempfile
-from pathlib import Path
-from typing import Dict
-
-import numpy as np
-import soundfile as sf
 from io import BytesIO
+from pathlib import Path
+from typing import TYPE_CHECKING, Dict
 
-try:
-    from pydub import AudioSegment
-except ImportError:  # pragma: no cover - handled at runtime
-    AudioSegment = None  # type: ignore
-
-try:
+if TYPE_CHECKING:
+    import numpy as np
     from kokoro import KPipeline
-    from kokoro.pipeline import ALIASES as KOKORO_ALIASES, LANG_CODES as KOKORO_LANG_CODES
-except ImportError:  # pragma: no cover - handled at runtime
-    KPipeline = None  # type: ignore
-    KOKORO_ALIASES = {}
-    KOKORO_LANG_CODES = {}
 
 from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
@@ -30,8 +18,120 @@ DEFAULT_LANG = "en-us"
 DEFAULT_SPEED = 0.9
 SUPPORTED_FORMATS = {"mp3", "wav"}
 DEFAULT_SAMPLE_RATE = 24_000
+ENGLISH_VOICE_NAMES = (
+    "American Female Heart",
+    "American Female Alloy",
+    "American Female Aoede",
+    "American Female Bella",
+    "American Female Jessica",
+    "American Female Kore",
+    "American Female Nicole",
+    "American Female Nova",
+    "American Female River",
+    "American Female Sarah",
+    "American Female Sky",
+    "American Male Adam",
+    "American Male Echo",
+    "American Male Eric",
+    "American Male Fenrir",
+    "American Male Liam",
+    "American Male Michael",
+    "American Male Onyx",
+    "American Male Puck",
+    "American Male Santa",
+    "British Female Alice",
+    "British Female Emma",
+    "British Female Isabella",
+    "British Female Lily",
+    "British Male Daniel",
+    "British Male Fable",
+    "British Male George",
+    "British Male Lewis",
+)
+ENGLISH_VOICE_CODES = (
+    "af_heart",
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+)
 
 logger = logging.getLogger(__name__)
+
+_NP = None
+_SF = None
+_AUDIO_SEGMENT = None
+_KPIPELINE = None
+_KOKORO_ALIASES = None
+_KOKORO_LANG_CODES = None
+
+
+def _ensure_numpy():
+    global _NP
+    if _NP is None:
+        import numpy as np  # type: ignore
+
+        _NP = np
+    return _NP
+
+
+def _ensure_soundfile():
+    global _SF
+    if _SF is None:
+        import soundfile as sf  # type: ignore
+
+        _SF = sf
+    return _SF
+
+
+def _ensure_pydub():
+    global _AUDIO_SEGMENT
+    if _AUDIO_SEGMENT is None:
+        try:
+            from pydub import AudioSegment  # type: ignore
+        except ImportError:  # pragma: no cover - handled at runtime
+            return None
+        _AUDIO_SEGMENT = AudioSegment
+    return _AUDIO_SEGMENT
+
+
+def _ensure_kokoro():
+    global _KPIPELINE, _KOKORO_ALIASES, _KOKORO_LANG_CODES
+    if _KPIPELINE is None or _KOKORO_ALIASES is None or _KOKORO_LANG_CODES is None:
+        try:
+            from kokoro import KPipeline  # type: ignore
+            from kokoro.pipeline import ALIASES, LANG_CODES  # type: ignore
+        except ImportError as exc:  # pragma: no cover - handled at runtime
+            raise TTSProviderError(
+                "The 'kokoro' package is not installed. Install it via 'pip install kokoro>=0.9.4'."
+            ) from exc
+        _KPIPELINE = KPipeline
+        _KOKORO_ALIASES = ALIASES
+        _KOKORO_LANG_CODES = LANG_CODES
+    return _KPIPELINE, _KOKORO_ALIASES, _KOKORO_LANG_CODES
 
 
 class KokoroTTSProvider(TTSProvider):
@@ -50,10 +150,8 @@ class KokoroTTSProvider(TTSProvider):
         self._pipelines: Dict[str, KPipeline] = {}
 
     def tts(self, request: TTSRequest) -> Path:
-        if KPipeline is None:
-            raise TTSProviderError(
-                "The 'kokoro' package is not installed. Install it via 'pip install kokoro>=0.9.4'."
-            )
+        _ensure_kokoro()
+        np = _ensure_numpy()
 
         params = request.parsed_parameters()
         voice_value = params.get("voice", DEFAULT_VOICE)
@@ -111,23 +209,25 @@ class KokoroTTSProvider(TTSProvider):
         return request.output_file
 
     def _resolve_lang_code(self, lang: str, voice: str) -> str:
+        _, kokoro_aliases, kokoro_lang_codes = _ensure_kokoro()
         normalized_lang = lang.replace("_", "-").lower()
-        if normalized_lang in KOKORO_ALIASES:
-            return KOKORO_ALIASES[normalized_lang]
+        if normalized_lang in kokoro_aliases:
+            return kokoro_aliases[normalized_lang]
         voice_prefix = voice.split("_", 1)[0].lower() if voice else ""
         if voice_prefix:
             candidate = voice_prefix[:1]
-            if candidate in KOKORO_LANG_CODES:
+            if candidate in kokoro_lang_codes:
                 return candidate
-        if normalized_lang in KOKORO_LANG_CODES:
+        if normalized_lang in kokoro_lang_codes:
             return normalized_lang
-        supported = ", ".join(sorted(KOKORO_LANG_CODES))
+        supported = ", ".join(sorted(kokoro_lang_codes))
         raise TTSProviderError(
             f"Could not determine Kokoro language code for lang='{lang}' and voice='{voice}'. "
             f"Supported language codes: {supported}."
         )
 
-    def _get_pipeline(self, lang_code: str) -> KPipeline:
+    def _get_pipeline(self, lang_code: str) -> "KPipeline":
+        KPipeline, _, _ = _ensure_kokoro()
         if lang_code in self._pipelines:
             return self._pipelines[lang_code]
         try:
@@ -138,20 +238,23 @@ class KokoroTTSProvider(TTSProvider):
         return pipeline
 
     @staticmethod
-    def _write_wav(path: Path, waveform: np.ndarray) -> None:
+    def _write_wav(path: Path, waveform: "np.ndarray") -> None:
+        sf = _ensure_soundfile()
         sf.write(str(path), waveform, DEFAULT_SAMPLE_RATE, format="WAV", subtype="PCM_16")
 
     @staticmethod
-    def _write_mp3(path: Path, waveform: np.ndarray) -> None:
+    def _write_mp3(path: Path, waveform: "np.ndarray") -> None:
         if _ffmpeg_available():
             _encode_mp3_with_ffmpeg(path, waveform)
             return
 
+        AudioSegment = _ensure_pydub()
         if AudioSegment is None:
             raise TTSProviderError(
                 "pydub is required to export MP3 audio but is not installed, and ffmpeg is unavailable. "
                 "Install pydub or ffmpeg."
             )
+        sf = _ensure_soundfile()
         buffer = BytesIO()
         sf.write(buffer, waveform, DEFAULT_SAMPLE_RATE, format="WAV", subtype="PCM_16")
         buffer.seek(0)
@@ -167,6 +270,13 @@ class KokoroTTSProvider(TTSProvider):
             ) from exc
 
 
+def get_english_voices() -> list[dict[str, str]]:
+    return [
+        {"name": name, "code": code}
+        for name, code in zip(ENGLISH_VOICE_NAMES, ENGLISH_VOICE_CODES, strict=True)
+    ]
+
+
 def _ffmpeg_available() -> bool:
     try:
         subprocess.run(
@@ -179,7 +289,8 @@ def _ffmpeg_available() -> bool:
         return False
 
 
-def _encode_mp3_with_ffmpeg(path: Path, waveform: np.ndarray) -> None:
+def _encode_mp3_with_ffmpeg(path: Path, waveform: "np.ndarray") -> None:
+    sf = _ensure_soundfile()
     tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp_wav_path = Path(tmp_wav.name)
     try:

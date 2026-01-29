@@ -46,6 +46,17 @@ if not return 404, else return the content of book.json and display it in code e
           <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
         </div>
       </div>
+      <div class="ignore-classes">
+        <label class="form-label" for="ignore-classes">Ignore CSS classes</label>
+        <input
+          class="form-control"
+          id="ignore-classes"
+          type="text"
+          placeholder="e.g. footnote, page-number"
+          autocomplete="off"
+        >
+        <div class="form-text">Comma-separated class names ignored during text extraction.</div>
+      </div>
       <div id="status-bar" class="status-bar">Ready.</div>
     </section>
 
@@ -127,6 +138,7 @@ if not return 404, else return the content of book.json and display it in code e
       const coverCard = $('#cover-card');
       const coverImage = $('#cover-image');
       const coverPlaceholder = $('#cover-placeholder');
+      const ignoreClassesInput = $('#ignore-classes');
       const editorCard = $('.editor-card');
       const showRawBtn = $('#show-raw-btn');
       const summaryTitle = $('#summary-title');
@@ -498,12 +510,23 @@ if not return 404, else return the content of book.json and display it in code e
         parseBtn.prop('disabled', true);
         try {
           console.log("start parsing");
+          const ignoreClassesRaw = ignoreClassesInput.val();
+          const ignoreClasses = typeof ignoreClassesRaw === 'string'
+            ? ignoreClassesRaw
+                .split(',')
+                .map((entry) => entry.trim())
+                .filter((entry) => entry.length > 0)
+            : [];
+          const params = [{ key: 'book_title', value: podTitle }];
+          if (ignoreClasses.length) {
+            params.push({ key: 'ignore_classes', value: ignoreClasses });
+          }
           const res = await fetchWithRefresh('/api/job', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               command: 'parse_epub',
-              params: [{ key: 'book_title', value: podTitle }]
+              params
             })
           });
           if (!res.ok) throw new Error('Parse request failed');

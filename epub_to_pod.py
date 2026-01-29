@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from collections.abc import Callable
 
 from dotenv import load_dotenv
 from tts.kokoro import KokoroTTSProvider
@@ -145,6 +146,7 @@ def convert_epub_to_pod(
     overwrite: bool,
     executable: str = "kokoro-tts",
     provider_name: str = "kokoro",
+    publish_progress: Callable[[int, str], None] | None = None,
 ) -> list[Path]:
     """Convert the selected EPUB chapters into MP3 files and return their paths."""
     if not isinstance(book_data, dict):
@@ -167,8 +169,9 @@ def convert_epub_to_pod(
     output_base = output_dir / "audio"
     output_base.mkdir(parents=True, exist_ok=True)
 
+    total_chapters = len(chapters)
     generated_files: list[Path] = []
-    for chapter in chapters:
+    for chapter_index, chapter in enumerate(chapters, start=1):
         number = chapter["chapter_number"]
         title = chapter.get("chapter_title") or f"Chapter {number}"
         destination = _chapter_output_path(output_base, number, title)
@@ -188,16 +191,21 @@ def convert_epub_to_pod(
 
         chunk_files: list[Path] = []
         print(f"Processing chapter {number}: {title}")
-        for idx, chunk_text in enumerate(chunk_texts, start=1):
-            chunk_path = destination.with_name(f"{destination.stem}_part_{idx:03d}{destination.suffix}")
+        for chunk_index, chunk_text in enumerate(chunk_texts, start=1):
+            chunk_path = destination.with_name(
+                f"{destination.stem}_part_{chunk_index:03d}{destination.suffix}"
+            )
             if chunk_path.exists():
                 chunk_path.unlink()
-            print(f"  Chunk {idx}/{len(chunk_texts)}: {chapter['chapter_title'] or f'Chapter {number}'}")
+            print(
+                f"  Chunk {chunk_index}/{len(chunk_texts)}: "
+                f"{chapter['chapter_title'] or f'Chapter {number}'}"
+            )
             try:
                 _synthesise_chunk(provider_info, chunk_text, chunk_path)
             except TTSProviderError as exc:
                 raise RuntimeError(
-                    f"TTS synthesis failed for chapter '{title}' chunk {idx}: {exc}"
+                    f"TTS synthesis failed for chapter '{title}' chunk {chunk_index}: {exc}"
                 ) from exc
             chunk_files.append(chunk_path)
 
@@ -208,6 +216,9 @@ def convert_epub_to_pod(
 
         print(f"Completed chapter {number}: {destination.name}")
         generated_files.append(destination)
+        if publish_progress is not None:
+            progress = int((chapter_index / total_chapters) * 100)
+            publish_progress(progress, f"processing chapter {chapter_index}/{total_chapters}")
 
     return generated_files
 

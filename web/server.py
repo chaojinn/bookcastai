@@ -26,6 +26,7 @@ from .api.queue import router as queue_router
 from .api.job_queue import router as job_queue_router
 from .api.epub import router as epub_router
 from .api.upload import router as upload_router
+from .api.tts import router as tts_router
 
 
 def _load_env() -> None:
@@ -104,6 +105,7 @@ def _build_app() -> FastAPI:
     app.include_router(job_queue_router)
     app.include_router(epub_router)
     app.include_router(upload_router)
+    app.include_router(tts_router)
 
     base_dir = Path(__file__).resolve().parent
     html_dir = base_dir / "html"

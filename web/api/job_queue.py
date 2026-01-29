@@ -33,11 +33,14 @@ cancels the job, set status to cancelled and finish time to now and call cancel 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -135,6 +138,15 @@ def _normalize_ignore_classes(value: Any) -> Optional[List[str]]:
     return None
 
 
+def _sanitize_pod_title(raw: Any) -> str:
+    if not raw:
+        return ""
+    name = os.path.basename(str(raw)).strip()
+    name = name.replace(" ", "")
+    name = name.replace("/", "").replace("\\", "")
+    return name
+
+
 def _to_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -143,6 +155,19 @@ def _to_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return False
+
+
+def _resolve_tts_provider(model_name: Any) -> Optional[str]:
+    if not isinstance(model_name, str):
+        return None
+    normalized = model_name.strip().lower()
+    if normalized in {"kokoro-tts", "kokoro"}:
+        return "kokoro"
+    if normalized in {"openai", "openai-tts"}:
+        return "openai"
+    if normalized in {"dia", "dia-tts"}:
+        return "dia"
+    return None
 
 
 def _ensure_async_state() -> None:
@@ -290,6 +315,103 @@ async def _handle_parse_epub(job: Job) -> None:
     _set_progress(job, 100, "Completed.")
 
 
+async def _handle_tts(job: Job) -> None:
+    params = _normalize_params(job.params)
+    book_title_raw = params.get("book_title")
+    book_title = _sanitize_pod_title(book_title_raw)
+    if not book_title:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "Missing book_title parameter.")
+        return
+
+    model_name = params.get("model_name") or "kokoro-tts"
+    provider_name = _resolve_tts_provider(model_name)
+    if provider_name is None:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "Unsupported model_name parameter.")
+        return
+
+    voice_value = params.get("voice")
+    voice = str(voice_value).strip() if isinstance(voice_value, str) and voice_value.strip() else "af_jessica"
+
+    speed_raw = params.get("speed", 1.0)
+    try:
+        speed = float(speed_raw)
+    except (TypeError, ValueError):
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "Invalid speed parameter.")
+        return
+
+    overwrite = _to_bool(params.get("overwrite"))
+
+    base_dir = os.getenv("PODS_BASE")
+    if not base_dir:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "PODS_BASE is not configured.")
+        return
+
+    base_path = Path(base_dir).expanduser() / book_title
+    json_path = base_path / "book.json"
+    if not json_path.exists():
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "Parsed EPUB JSON not found.")
+        return
+
+    try:
+        book_text = json_path.read_text(encoding="utf-8")
+        book_data = json.loads(book_text)
+    except OSError as exc:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, f"Failed to read EPUB JSON: {exc}")
+        return
+    except json.JSONDecodeError as exc:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, f"Invalid EPUB JSON: {exc}")
+        return
+
+    def publish_progress(progress: int, message: str | None = None) -> None:
+        _set_progress(job, progress, message or "")
+
+    try:
+        from epub_to_pod import convert_epub_to_pod
+    except ImportError as exc:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, f"TTS engine unavailable: {exc}")
+        return
+
+    _set_progress(job, 0, "Starting TTS...")
+    try:
+        await asyncio.to_thread(
+            convert_epub_to_pod,
+            book_data=book_data,
+            output_dir=base_path,
+            voice=voice,
+            lang="en-us",
+            speed=speed,
+            overwrite=overwrite,
+            provider_name=provider_name,
+            publish_progress=publish_progress,
+        )
+    except Exception as exc:
+        logger.exception("tts job failed for %s", job.id)
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, str(exc) or "TTS failed.")
+        return
+
+    job.status = "success"
+    job.finished_at = _utc_now()
+    _set_progress(job, 100, "Completed.")
+
+
 async def _prune_jobs_locked() -> None:
     if len(_job_order) <= MAX_JOBS:
         return
@@ -390,3 +512,4 @@ async def cancel_job(
 
 
 register_job_handler("parse_epub", _handle_parse_epub)
+register_job_handler("tts", _handle_tts)
