@@ -487,6 +487,7 @@ if not return 404, else return the content of book.json and display it in code e
             await loadResult();
             stopProgress();
             parseBtn.prop('disabled', false);
+            window.location.href = `/tts.html?pod_title=${encodeURIComponent(podTitle)}`;
             return;
           }
           if (status === 'fail' || status === 'cancelled') {

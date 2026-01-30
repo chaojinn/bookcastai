@@ -155,7 +155,8 @@ if file upload failed, an error message should be displayed
             body: formData
           });
           if (!res.ok) throw new Error('Upload failed');
-          setStatus('Upload complete!', 'success');
+          setStatus('Upload complete! Redirecting...', 'success');
+          window.location.href = `/epub.html?pod_title=${encodeURIComponent(folderName)}`;
         } catch (err) {
           console.error(err);
           setStatus('Upload failed. Please try again.', 'danger');
