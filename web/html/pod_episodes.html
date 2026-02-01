@@ -74,7 +74,7 @@
       function buildRows(queueIds) {
         return (podEpisodes || []).map(ep => {
           const idxVal = ep.index || '';
-          const isQueued = queueIds.has(idxVal);
+          const isQueued = queueIds.has(`${podId}:${idxVal}`);
           const queueBtn = isQueued
             ? ''
             : `
@@ -126,7 +126,7 @@
           const queueRes = await fetchWithRefresh('/api/queue');
           if (!queueRes.ok) throw new Error(`Request failed: ${queueRes.status}`);
           const queue = await queueRes.json();
-          const queueIds = new Set(queue.map(item => `${item.episode_idx}`));
+          const queueIds = new Set(queue.map(item => `${item.pod_id}:${item.episode_idx}`));
           renderTable(buildRows(queueIds));
           statusEl.style.display = 'none';
         } catch (err) {
@@ -150,7 +150,7 @@
           if (!podsRes.ok) throw new Error(`Request failed: ${podsRes.status}`);
           if (!queueRes.ok) throw new Error(`Request failed: ${queueRes.status}`);
           const [pods, queue] = await Promise.all([podsRes.json(), queueRes.json()]);
-          const queueIds = new Set(queue.map(item => `${item.episode_idx}`));
+          const queueIds = new Set(queue.map(item => `${item.pod_id}:${item.episode_idx}`));
           const pod = pods.find(p => p.id === podId);
           if (!pod) {
             showStatus('Podcast not found.', true);

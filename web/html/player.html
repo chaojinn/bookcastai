@@ -303,6 +303,12 @@ don't remove this comment after generating code
 
           const actions = document.createElement('div');
           actions.className = 'queue-actions';
+          const playItemBtn = document.createElement('button');
+          playItemBtn.className = 'queue-play';
+          playItemBtn.setAttribute('aria-label', 'Play this episode');
+          playItemBtn.setAttribute('data-queue-index', idx);
+          playItemBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
+          actions.appendChild(playItemBtn);
           const removeBtn = document.createElement('button');
           removeBtn.className = 'queue-remove';
           removeBtn.setAttribute('aria-label', 'Remove from queue');
@@ -573,6 +579,15 @@ don't remove this comment after generating code
       });
 
       queueListEl.addEventListener('click', async (e) => {
+        const playBtn = e.target.closest('.queue-play');
+        if (playBtn) {
+          e.preventDefault();
+          const idx = Number(playBtn.getAttribute('data-queue-index'));
+          if (Number.isFinite(idx) && idx >= 0 && idx < queue.length) {
+            void setCurrentIndex(idx, { autoplay: true });
+          }
+          return;
+        }
         const btn = e.target.closest('.queue-remove');
         if (!btn) return;
         e.preventDefault();

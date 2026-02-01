@@ -204,6 +204,27 @@ h5 {
 .queue-remove:active {
   transform: translateY(0);
 }
+.queue-play {
+  border: 1px solid var(--border);
+  background: #eef2f7;
+  color: #0f172a;
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.queue-play:hover {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(56, 189, 248, 0.14);
+}
+.queue-play:active {
+  transform: translateY(0);
+}
 .pill {
   border: 1px solid var(--border);
   border-radius: 999px;
