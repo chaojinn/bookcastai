@@ -51,7 +51,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label" for="speed-range">
-            Speed <span id="speed-value">1.0x</span>
+            Speed <span id="speed-value">1.00x</span>
           </label>
           <input
             class="form-range"
@@ -59,7 +59,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
             type="range"
             min="0.6"
             max="1.2"
-            step="0.1"
+            step="0.05"
             value="1.0"
           >
         </div>
@@ -153,7 +153,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
 
       function updateSpeedLabel(value) {
         const numeric = Number(value);
-        const display = Number.isFinite(numeric) ? numeric.toFixed(1) : '1.0';
+        const display = Number.isFinite(numeric) ? numeric.toFixed(2) : '1.00';
         speedValue.text(`${display}x`);
       }
 
