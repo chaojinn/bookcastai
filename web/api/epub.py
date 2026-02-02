@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from supertokens_python.recipe.session import SessionContainer
 from supertokens_python.recipe.session.framework.fastapi import verify_session
@@ -31,29 +31,46 @@ def _sanitize_pod_title(raw: str) -> str:
     return name
 
 
-@router.get("/api/epub/{pod_title}")
-async def check_epub(
-    pod_title: str,
-    session: SessionContainer = Depends(verify_session()),
-) -> dict[str, str]:
+def _get_book_dir(request: Request, user_id: str, pod_title: str) -> Path:
+    """Get the book directory, checking database first then falling back to legacy path."""
+    base_dir = _get_base_dir()
     folder = _sanitize_pod_title(pod_title)
     if not folder:
         raise HTTPException(status_code=400, detail="Invalid pod title.")
-    epub_path = _get_base_dir() / folder / "book.epub"
+    # Check database for the book
+    book = request.app.state.pgdb.get_book_for_user(folder, user_id)
+    if book:
+        return base_dir / book["folder_path"]
+    # Fallback to legacy flat path
+    legacy_path = base_dir / folder
+    if legacy_path.exists():
+        return legacy_path
+    raise HTTPException(status_code=404, detail="Book not found.")
+
+
+@router.get("/api/epub/{pod_title}")
+async def check_epub(
+    pod_title: str,
+    request: Request,
+    session: SessionContainer = Depends(verify_session()),
+) -> dict[str, str]:
+    user_id = session.get_user_id()
+    book_dir = _get_book_dir(request, user_id, pod_title)
+    epub_path = book_dir / "book.epub"
     if not epub_path.exists():
         raise HTTPException(status_code=404, detail="EPUB file not found.")
-    return {"status": "ok", "pod_title": folder}
+    return {"status": "ok", "pod_title": _sanitize_pod_title(pod_title)}
 
 
 @router.get("/api/epub_result/{pod_title}")
 async def get_epub_result(
     pod_title: str,
+    request: Request,
     session: SessionContainer = Depends(verify_session()),
 ) -> Response:
-    folder = _sanitize_pod_title(pod_title)
-    if not folder:
-        raise HTTPException(status_code=400, detail="Invalid pod title.")
-    json_path = _get_base_dir() / folder / "book.json"
+    user_id = session.get_user_id()
+    book_dir = _get_book_dir(request, user_id, pod_title)
+    json_path = book_dir / "book.json"
     if not json_path.exists():
         raise HTTPException(status_code=404, detail="EPUB result not found.")
     try:
@@ -72,14 +89,12 @@ def _run_epub_parse(pod_title: str) -> None:
         logger.exception("Failed to parse EPUB for %s", pod_title)
 
 
-def _generate_feed_xml(pod_title: str) -> Path:
+def _generate_feed_xml(book_dir: Path, pod_title: str, folder_path: str) -> Path:
     try:
         import feed as feed_module
     except Exception as exc:  # pragma: no cover - import guard
         raise HTTPException(status_code=500, detail="Feed generator is unavailable.") from exc
 
-    base_dir = _get_base_dir()
-    book_dir = base_dir / pod_title
     metadata_path = book_dir / "book.json"
     audio_dir = book_dir / "audio"
     output_path = book_dir / "book.xml"
@@ -107,7 +122,8 @@ def _generate_feed_xml(pod_title: str) -> Path:
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=500, detail="Failed to read metadata JSON.") from exc
 
-    media_base_url = f"{audio_url_prefix.rstrip('/')}/{pod_title}"
+    # Use folder_path for URL generation (includes user_id for new structure)
+    media_base_url = f"{audio_url_prefix.rstrip('/')}/{folder_path}"
     audio_base_url = f"{media_base_url}/audio"
 
     try:
@@ -141,32 +157,50 @@ def _generate_feed_xml(pod_title: str) -> Path:
 @router.post("/api/epub_parse/{pod_title}")
 async def parse_epub(
     pod_title: str,
+    request: Request,
     background_tasks: BackgroundTasks,
     session: SessionContainer = Depends(verify_session()),
 ) -> dict[str, str]:
+    user_id = session.get_user_id()
     folder = _sanitize_pod_title(pod_title)
     if not folder:
         raise HTTPException(status_code=400, detail="Invalid pod title.")
-    epub_path = _get_base_dir() / folder / "book.epub"
+    # Get book directory (user-specific or legacy)
+    book = request.app.state.pgdb.get_book_for_user(folder, user_id)
+    if book:
+        folder_path = book["folder_path"]
+    else:
+        folder_path = folder  # Legacy flat structure
+    book_dir = _get_base_dir() / folder_path
+    epub_path = book_dir / "book.epub"
     if not epub_path.exists():
         raise HTTPException(status_code=404, detail="EPUB file not found.")
     try:
         from agent.epub_agent import run_epub_agent as _unused  # noqa: F401
     except ImportError as exc:
         raise HTTPException(status_code=500, detail="EPUB parser is unavailable.") from exc
-    background_tasks.add_task(_run_epub_parse, folder)
+    background_tasks.add_task(_run_epub_parse, folder_path)
     return {"status": "started", "pod_title": folder}
 
 
 @router.post("/api/feed/{pod_title}")
 async def create_feed(
     pod_title: str,
+    request: Request,
     session: SessionContainer = Depends(verify_session()),
 ) -> Response:
+    user_id = session.get_user_id()
     folder = _sanitize_pod_title(pod_title)
     if not folder:
         raise HTTPException(status_code=400, detail="Invalid pod title.")
-    output_path = _generate_feed_xml(folder)
+    # Get book directory (user-specific or legacy)
+    book = request.app.state.pgdb.get_book_for_user(folder, user_id)
+    if book:
+        folder_path = book["folder_path"]
+    else:
+        folder_path = folder  # Legacy flat structure
+    book_dir = _get_base_dir() / folder_path
+    output_path = _generate_feed_xml(book_dir, folder, folder_path)
     try:
         content = output_path.read_text(encoding="utf-8")
     except OSError as exc:

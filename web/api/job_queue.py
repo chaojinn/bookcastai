@@ -43,12 +43,46 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from supertokens_python.recipe.session import SessionContainer
 from supertokens_python.recipe.session.framework.fastapi import verify_session
 
+from web.PGDB import PGDB
+
 logger = logging.getLogger(__name__)
+
+# Database instance for job handlers to look up book paths
+_pgdb: Optional[PGDB] = None
+
+
+def _get_pgdb() -> PGDB:
+    """Get or create the database connection for job handlers."""
+    global _pgdb
+    if _pgdb is None:
+        _pgdb = PGDB()
+        _pgdb.connect()
+    return _pgdb
+
+
+def _resolve_book_path(book_title: str, user_id: Optional[str] = None) -> Optional[str]:
+    """Resolve book_title to folder_path using database lookup."""
+    if not book_title:
+        return None
+    try:
+        pgdb = _get_pgdb()
+        if user_id:
+            book = pgdb.get_book_for_user(book_title, user_id)
+            if book:
+                return book["folder_path"]
+        # Fallback: check if book_title looks like a path already (contains /)
+        if "/" in book_title:
+            return book_title
+        # Return original title for legacy flat structure
+        return book_title
+    except Exception as exc:
+        logger.warning("Failed to resolve book path for %s: %s", book_title, exc)
+        return book_title
 
 router = APIRouter()
 
@@ -266,6 +300,15 @@ async def _handle_parse_epub(job: Job) -> None:
         _set_progress(job, 100, "Missing book_title parameter.")
         return
 
+    # Resolve book path using user_id if provided
+    user_id = params.get("user_id")
+    folder_path = _resolve_book_path(_sanitize_pod_title(book_title), user_id)
+    if not folder_path:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "Book not found.")
+        return
+
     chunk_size_raw = params.get("chunk_size")
     chunk_size = None
     if chunk_size_raw is not None:
@@ -299,7 +342,7 @@ async def _handle_parse_epub(job: Job) -> None:
             kwargs["ignore_classes"] = ignore_classes
         await asyncio.to_thread(
             run_epub_agent,
-            book_title,
+            folder_path,  # Use resolved folder path (user_id/book_title or legacy)
             publish_progress=publish_progress,
             **kwargs,
         )
@@ -323,6 +366,15 @@ async def _handle_tts(job: Job) -> None:
         job.status = "fail"
         job.finished_at = _utc_now()
         _set_progress(job, 100, "Missing book_title parameter.")
+        return
+
+    # Resolve book path using user_id if provided
+    user_id = params.get("user_id")
+    folder_path = _resolve_book_path(book_title, user_id)
+    if not folder_path:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "Book not found.")
         return
 
     model_name = params.get("model_name") or "kokoro-tts"
@@ -354,7 +406,8 @@ async def _handle_tts(job: Job) -> None:
         _set_progress(job, 100, "PODS_BASE is not configured.")
         return
 
-    base_path = Path(base_dir).expanduser() / book_title
+    # Use resolved folder_path for the book directory
+    base_path = Path(base_dir).expanduser() / folder_path
     json_path = base_path / "book.json"
     if not json_path.exists():
         job.status = "fail"
@@ -465,10 +518,13 @@ async def create_job(
 ) -> Dict[str, str]:
     _ensure_async_state()
     job_id = str(uuid.uuid4())
+    # Inject user_id into params for path resolution in handlers
+    user_id = session.get_user_id()
+    params_with_user = list(payload.params) + [{"key": "user_id", "value": user_id}]
     job = Job(
         id=job_id,
         command=payload.command,
-        params=payload.params,
+        params=params_with_user,
         status="queued",
         progress=0,
         progress_msg="Queued.",

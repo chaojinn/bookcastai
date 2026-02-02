@@ -319,8 +319,8 @@ def _resolve_pods_base(state: "EPUBAgentState") -> Path:
     return _DATA_BASE
 
 
-def _write_sentences_json(book_title: str, payload: Dict[str, Any], pods_base: Path) -> None:
-    target_path = pods_base / book_title / "sentences.json"
+def _write_sentences_json(book_folder: str, payload: Dict[str, Any], pods_base: Path) -> None:
+    target_path = pods_base / book_folder / "sentences.json"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with target_path.open("w", encoding="utf-8") as handle:
@@ -342,11 +342,19 @@ def make_chunk_chapter_content_node(
         epub_path = state.get("epub_path")
         pods_base = _resolve_pods_base(state)
         book_title = ""
+        book_folder = ""  # Full relative path from pods_base (e.g., "user_id/book_title")
         if isinstance(epub_path, str):
             try:
-                book_title = Path(epub_path).expanduser().resolve().parent.name
+                epub_parent = Path(epub_path).expanduser().resolve().parent
+                book_title = epub_parent.name
+                # Get relative path from pods_base for user-specific folder structure
+                try:
+                    book_folder = str(epub_parent.relative_to(pods_base))
+                except ValueError:
+                    book_folder = book_title  # Fallback if not under pods_base
             except OSError:
                 book_title = Path(epub_path).parent.name
+                book_folder = book_title
         ai_enabled = bool(getattr(text_processor, "_ai_extract_text", False))
         ai_changes_log: List[Dict[str, Any]] = []
         chapter_change_index: Dict[int, Dict[str, Any]] = {}
@@ -422,11 +430,11 @@ def make_chunk_chapter_content_node(
                 chapters=updated_chapters if modified else chapters,
             )
 
-        if sentences_payload:
-            _write_sentences_json(book_title, sentences_payload, pods_base)
+        if sentences_payload and book_folder:
+            _write_sentences_json(book_folder, sentences_payload, pods_base)
 
-        if ai_enabled and book_title:
-            changes_path = pods_base / book_title / "ai_changes.json"
+        if ai_enabled and book_folder:
+            changes_path = pods_base / book_folder / "ai_changes.json"
             changes_path.parent.mkdir(parents=True, exist_ok=True)
             with changes_path.open("w", encoding="utf-8") as handle:
                 json.dump(ai_changes_log, handle, indent=2, ensure_ascii=False)

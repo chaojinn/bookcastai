@@ -43,6 +43,13 @@ if file upload failed, an error message should be displayed
           <input type="text" id="file-name" class="form-control" placeholder="Selected file name">
         </div>
 
+        <div class="form-check mt-3">
+          <input type="checkbox" class="form-check-input" id="visibility-check" checked>
+          <label class="form-check-label" for="visibility-check">
+            Share with public library
+          </label>
+        </div>
+
         <div id="override-warning" class="alert alert-warning d-none" role="alert">
           A folder with this name already exists. Uploading will overwrite the existing book.
         </div>
@@ -146,6 +153,7 @@ if file upload failed, an error message should be displayed
         const formData = new FormData();
         formData.append('file', file);
         formData.append('folder_name', folderName);
+        formData.append('visibility', $('#visibility-check').is(':checked') ? '1' : '0');
 
         uploadBtn.prop('disabled', true);
         setStatus('Uploading...', 'info');

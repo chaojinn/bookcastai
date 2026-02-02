@@ -7,8 +7,10 @@ from typing import List, Optional
 import xml.etree.ElementTree as ET
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from supertokens_python.recipe.session import SessionContainer
+from supertokens_python.recipe.session.framework.fastapi import verify_session
 logger = logging.getLogger(__name__)
 load_dotenv(override=False)
 
@@ -26,6 +28,8 @@ class PodInfo(BaseModel):
     title: str
     image_url: str
     episodes: List[EpisodeInfo]
+    is_owner: bool = False
+    visibility: int = 1
 
 
 router = APIRouter()
@@ -86,7 +90,10 @@ def _parse_pod_file(path: Path) -> Optional[PodInfo]:
 
 
 @router.get("/api/get_pods", response_model=List[PodInfo])
-async def get_pods() -> List[PodInfo]:
+async def get_pods(
+    request: Request,
+    session: SessionContainer = Depends(verify_session()),
+) -> List[PodInfo]:
     base_dir = os.getenv("PODS_BASE")
     if not base_dir:
         raise HTTPException(status_code=500, detail="PODS_BASE is not configured")
@@ -95,10 +102,24 @@ async def get_pods() -> List[PodInfo]:
     if not root.exists() or not root.is_dir():
         raise HTTPException(status_code=500, detail="PODS_BASE directory not found")
 
+    user_id = session.get_user_id()
     pods: List[PodInfo] = []
-    for xml_path in sorted(root.rglob("*.xml")):
+    seen_ids: set[str] = set()
+
+    # Get accessible books from database (user's own + public)
+    books = request.app.state.pgdb.get_user_books(user_id)
+    for book in books:
+        folder_path = book["folder_path"]
+        xml_path = root / folder_path / "book.xml"
+        if not xml_path.exists():
+            continue
         pod = _parse_pod_file(xml_path)
         if pod:
+            pod.is_owner = (book["user_id"] == user_id)
+            pod.visibility = book["visibility"]
             pods.append(pod)
+            seen_ids.add(pod.id)
+
+   
 
     return pods

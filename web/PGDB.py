@@ -83,6 +83,26 @@ class PGDB:
                 );
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS books (
+                    id SERIAL PRIMARY KEY,
+                    user_id CHAR(36) NOT NULL,
+                    book_title VARCHAR(255) NOT NULL,
+                    folder_path VARCHAR(512) NOT NULL,
+                    created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    modified_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    visibility SMALLINT DEFAULT 1,
+                    UNIQUE(user_id, book_title)
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_books_user_id ON books(user_id);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_books_visibility ON books(visibility);"
+            )
 
     def update_last_location(self, user_id: str, uri: str) -> None:
         """Insert or update the last_location for a user."""
@@ -264,3 +284,126 @@ class PGDB:
                     (current_idx - 1, user_id, current_idx),
                 )
             return True
+
+    def insert_book(
+        self,
+        user_id: str,
+        book_title: str,
+        folder_path: str,
+        visibility: int = 1,
+    ) -> int:
+        """Insert a new book record or update if exists; returns the book id."""
+        if not user_id or not book_title or not folder_path:
+            raise ValueError("user_id, book_title, and folder_path are required")
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO books (user_id, book_title, folder_path, visibility)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, book_title) DO UPDATE SET
+                    modified_time = CURRENT_TIMESTAMP,
+                    visibility = EXCLUDED.visibility
+                RETURNING id;
+                """,
+                (user_id, book_title, folder_path, visibility),
+            )
+            row = cur.fetchone()
+            return row[0] if row else 0
+
+    def get_user_books(self, user_id: str) -> list[dict[str, object]]:
+        """Return all books owned by user OR marked as public."""
+        if not user_id:
+            raise ValueError("user_id is required")
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, user_id, book_title, folder_path, visibility
+                FROM books
+                WHERE user_id = %s OR visibility = 1
+                ORDER BY modified_time DESC;
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "book_title": row[2],
+                    "folder_path": row[3],
+                    "visibility": row[4],
+                }
+                for row in rows
+            ]
+
+    def get_book_by_folder(self, folder_path: str) -> Optional[dict[str, object]]:
+        """Return a book by its folder path."""
+        if not folder_path:
+            raise ValueError("folder_path is required")
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, user_id, book_title, folder_path, visibility
+                FROM books
+                WHERE folder_path = %s
+                LIMIT 1;
+                """,
+                (folder_path,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "user_id": row[1],
+                "book_title": row[2],
+                "folder_path": row[3],
+                "visibility": row[4],
+            }
+
+    def get_book_for_user(
+        self, book_title: str, user_id: str
+    ) -> Optional[dict[str, object]]:
+        """Return a book by title if user owns it or it's public. Prefers user's own book."""
+        if not book_title or not user_id:
+            raise ValueError("book_title and user_id are required")
+        with self._cursor() as cur:
+            # First check if user owns a book with this title
+            cur.execute(
+                """
+                SELECT id, user_id, book_title, folder_path, visibility
+                FROM books
+                WHERE book_title = %s AND user_id = %s
+                LIMIT 1;
+                """,
+                (book_title, user_id),
+            )
+            row = cur.fetchone()
+            if row:
+                return {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "book_title": row[2],
+                    "folder_path": row[3],
+                    "visibility": row[4],
+                }
+            # Then check for public book with this title
+            cur.execute(
+                """
+                SELECT id, user_id, book_title, folder_path, visibility
+                FROM books
+                WHERE book_title = %s AND visibility = 1
+                LIMIT 1;
+                """,
+                (book_title,),
+            )
+            row = cur.fetchone()
+            if row:
+                return {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "book_title": row[2],
+                    "folder_path": row[3],
+                    "visibility": row[4],
+                }
+            return None

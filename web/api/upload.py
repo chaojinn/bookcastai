@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from supertokens_python.recipe.session import SessionContainer
 from supertokens_python.recipe.session.framework.fastapi import verify_session
 
@@ -35,22 +35,29 @@ async def check_upload_folder(
     folder = _sanitize_folder_name(name)
     if not folder:
         raise HTTPException(status_code=400, detail="Invalid folder name.")
+    user_id = session.get_user_id()
     base_dir = _get_base_dir()
-    return {"exists": (base_dir / folder).exists(), "folder": folder}
+    user_folder = base_dir / user_id / folder
+    return {"exists": user_folder.exists(), "folder": folder}
 
 
 @router.post("/api/upload")
 async def upload_book(
+    request: Request,
     folder_name: str = Form(...),
     file: UploadFile = File(...),
+    visibility: int = Form(1),
     session: SessionContainer = Depends(verify_session()),
 ) -> dict[str, str]:
     folder = _sanitize_folder_name(folder_name)
     if not folder:
         raise HTTPException(status_code=400, detail="Invalid folder name.")
+    user_id = session.get_user_id()
     base_dir = _get_base_dir()
-    base_dir.mkdir(parents=True, exist_ok=True)
-    dest_dir = base_dir / folder
+    # User-specific directory structure
+    user_dir = base_dir / user_id
+    user_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir = user_dir / folder
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / "book.epub"
     try:
@@ -58,4 +65,8 @@ async def upload_book(
             shutil.copyfileobj(file.file, target)
     finally:
         await file.close()
-    return {"status": "ok", "folder": folder}
+    # Insert/update database record
+    folder_path = f"{user_id}/{folder}"
+    visibility_val = 1 if visibility else 0
+    request.app.state.pgdb.insert_book(user_id, folder, folder_path, visibility_val)
+    return {"status": "ok", "folder": folder, "path": folder_path}
