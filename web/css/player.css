@@ -281,6 +281,9 @@ audio {
   #progress {
     height: 5px;
   }
+  .queue-item-meta {
+    display: none;
+  }
   body.expanded {
     min-height: 50vh;
   }

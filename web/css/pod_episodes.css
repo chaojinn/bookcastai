@@ -29,6 +29,9 @@ body {
   margin: 0;
   font-weight: 700;
   color: #10172f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .header .subtitle {
@@ -68,6 +71,24 @@ table.dataTable tbody tr:hover {
 }
 
 @media (max-width: 640px) {
+  #episodes-table th:first-child,
+  #episodes-table td:first-child {
+    display: none;
+  }
+  #episodes-table th.col-duration {
+    font-size: 0;
+    text-align: center;
+  }
+  #episodes-table th.col-duration::before {
+    
+    font-weight: 900;
+    font-size: 20px;
+    line-height: 1;
+    color: #000;
+    display: inline-block;
+    width: 100%;
+    text-align: center;
+  }
   .actions {
     flex-direction: column;
     align-items: stretch;

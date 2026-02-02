@@ -24,7 +24,7 @@
           <tr>
             <th>Index</th>
             <th>Title</th>
-            <th>Duration</th>
+            <th class="col-duration">Duration</th>
             <th></th>
           </tr>
         </thead>
@@ -72,7 +72,7 @@
       }
 
       function buildRows(queueIds) {
-        return (podEpisodes || []).map(ep => {
+        const rows = (podEpisodes || []).map(ep => {
           const idxVal = ep.index || '';
           const isQueued = queueIds.has(`${podId}:${idxVal}`);
           const queueBtn = isQueued
@@ -94,6 +94,14 @@
             `
           ]);
         });
+        rows.sort((a, b) => {
+          const aIdx = Number(a[0]);
+          const bIdx = Number(b[0]);
+          const aVal = Number.isFinite(aIdx) ? aIdx : Number.MAX_SAFE_INTEGER;
+          const bVal = Number.isFinite(bIdx) ? bIdx : Number.MAX_SAFE_INTEGER;
+          return aVal - bVal;
+        });
+        return rows;
       }
 
       function renderTable(rows) {
@@ -113,7 +121,8 @@
           ],
           paging: true,
           pageLength: 10,
-          order: rows.length ? [[0, 'asc']] : [],
+          order: [],
+          ordering: false,
           searching: false,
           info: false,
           lengthChange: false
