@@ -35,9 +35,14 @@ if not return 404, else return the content of book.json and display it in code e
         <h1>EPUB Parser</h1>
         <p class="subtitle">Pod: <span id="pod-title">Unknown</span></p>
       </div>
-      <button class="btn btn-primary" id="parse-btn" disabled>
-        <i class="fa-solid fa-wand-magic-sparkles"></i> Parse EPUB
-      </button>
+      <div class="d-flex gap-2">
+        <button class="btn btn-primary" id="parse-btn" disabled>
+          <i class="fa-solid fa-wand-magic-sparkles"></i> Parse EPUB
+        </button>
+        <a class="btn btn-success d-none" id="tts-btn" href="#">
+          <i class="fa-solid fa-headphones"></i> TTS
+        </a>
+      </div>
     </header>
 
     <section class="panel">
@@ -114,6 +119,11 @@ if not return 404, else return the content of book.json and display it in code e
 
     <section class="editor-card is-hidden">
       <textarea id="editor" aria-label="EPUB JSON output"></textarea>
+      <div class="mt-2 text-end">
+        <button class="btn btn-primary btn-sm" id="save-json-btn" type="button">
+          <i class="fa-solid fa-floppy-disk"></i> Save
+        </button>
+      </div>
     </section>
   </main>
 
@@ -141,6 +151,8 @@ if not return 404, else return the content of book.json and display it in code e
       const ignoreClassesInput = $('#ignore-classes');
       const editorCard = $('.editor-card');
       const showRawBtn = $('#show-raw-btn');
+      const ttsBtn = $('#tts-btn');
+      const saveJsonBtn = $('#save-json-btn');
       const summaryTitle = $('#summary-title');
       const summaryChapters = $('#summary-chapters');
       const summaryFirst = $('#summary-first');
@@ -211,6 +223,12 @@ if not return 404, else return the content of book.json and display it in code e
           const positions = findFirstLevelFoldPositions(text);
           positions.forEach((pos) => editor.foldCode(pos, null, 'fold'));
         });
+      }
+
+      function showTtsButton() {
+        ttsBtn
+          .attr('href', `/tts.html?pod_title=${encodeURIComponent(podTitle)}`)
+          .removeClass('d-none');
       }
 
       function setStatus(message, variant) {
@@ -411,6 +429,7 @@ if not return 404, else return the content of book.json and display it in code e
             applyInitialFolds();
             updateParsedOutput(text);
             setStatus('Loaded parsed JSON output.', 'success');
+            showTtsButton();
             return true;
           }
           if (res.status === 404) {
@@ -487,7 +506,7 @@ if not return 404, else return the content of book.json and display it in code e
             await loadResult();
             stopProgress();
             parseBtn.prop('disabled', false);
-            window.location.href = `/tts.html?pod_title=${encodeURIComponent(podTitle)}`;
+            showTtsButton();
             return;
           }
           if (status === 'fail' || status === 'cancelled') {
@@ -551,6 +570,36 @@ if not return 404, else return the content of book.json and display it in code e
       showRawBtn.on('click', () => {
         if (!rawDataAvailable) return;
         setRawState({ visible: !rawDataVisible });
+      });
+
+      saveJsonBtn.on('click', async () => {
+        if (!podTitle) return;
+        const content = editor.getValue();
+        if (!content.trim()) {
+          setStatus('Editor is empty, nothing to save.', 'error');
+          return;
+        }
+        saveJsonBtn.prop('disabled', true);
+        setStatus('Saving JSON...', 'info');
+        try {
+          const res = await fetchWithRefresh('/api/epub/json', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pod_title: podTitle, content })
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Save failed');
+          }
+          setStatus('JSON saved successfully.', 'success');
+          updateParsedOutput(content);
+          alert('JSON saved successfully.');
+        } catch (err) {
+          console.warn('Failed to save JSON', err);
+          setStatus(err.message || 'Failed to save JSON.', 'error');
+        } finally {
+          saveJsonBtn.prop('disabled', false);
+        }
       });
 
       setRawState({ available: false, visible: false });

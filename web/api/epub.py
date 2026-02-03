@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
+from pydantic import BaseModel
 from supertokens_python.recipe.session import SessionContainer
 from supertokens_python.recipe.session.framework.fastapi import verify_session
 
@@ -152,6 +153,31 @@ def _generate_feed_xml(book_dir: Path, pod_title: str, folder_path: str) -> Path
     feed_module._indent(feed_tree.getroot())
     feed_tree.write(output_path, encoding="utf-8", xml_declaration=True)
     return output_path
+
+
+class SaveJsonRequest(BaseModel):
+    pod_title: str
+    content: str
+
+
+@router.post("/api/epub/json")
+async def save_epub_json(
+    body: SaveJsonRequest,
+    request: Request,
+    session: SessionContainer = Depends(verify_session()),
+) -> dict[str, str]:
+    user_id = session.get_user_id()
+    book_dir = _get_book_dir(request, user_id, body.pod_title)
+    try:
+        json.loads(body.content)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}") from exc
+    json_path = book_dir / "book.json"
+    try:
+        json_path.write_text(body.content, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to write JSON file.") from exc
+    return {"status": "ok"}
 
 
 @router.post("/api/epub_parse/{pod_title}")

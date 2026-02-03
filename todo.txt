@@ -6,3 +6,7 @@ run whisperx model to get word level timestamp
 generate background image/images using nano banana (optional)
 generate a video displaying transcript of the clip and high lighting each word according to word level timestamp over time
 buttons to share the clip to sns
+
+
+2. add a button to save manual edit on epub.html and a button to go to tts page
+3. a button in pod_episodes to get rss xml link
