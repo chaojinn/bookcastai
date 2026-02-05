@@ -4,12 +4,15 @@ import asyncio
 import logging
 import os
 import subprocess
+import shutil
 import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -210,9 +213,12 @@ def _transcribe_clip(clip_path: str, timestamp_offset: float) -> List[Dict[str, 
 # Video Generation Functions
 # ============================================================================
 
-VIDEO_WIDTH = 405
+VIDEO_WIDTH = 406  # Must be even for H.264 (closest to ideal 405 for 9:16)
 VIDEO_HEIGHT = 720
 VIDEO_FPS = 24
+VIDEO_CRF = 18  # Lower CRF preserves sharp text edges
+VIDEO_TUNE = "stillimage"  # Optimize encoder for sharp static graphics
+BACKGROUND_BLUR_RADIUS = 6  # Gaussian blur to soften cover text/details
 MAX_CHARS_PER_LINE = 30
 FONT_SIZE = 24
 LINE_SPACING = 1.5  # Line height multiplier
@@ -222,16 +228,6 @@ VERTICAL_PADDING_RATIO = 0.10  # 10% padding on top and bottom
 # Calculate visible lines based on usable vertical space
 _usable_height = int(VIDEO_HEIGHT * (1 - 2 * VERTICAL_PADDING_RATIO))  # 80% of height
 VISIBLE_LINES = _usable_height // LINE_HEIGHT_PX  # How many lines fit
-
-
-def _format_ass_time(seconds: float) -> str:
-    """Convert seconds to ASS timestamp format (H:MM:SS.cc)."""
-    if seconds < 0:
-        seconds = 0
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    return f"{h}:{m:02d}:{s:05.2f}"
 
 
 def _group_words_into_lines(
@@ -261,144 +257,161 @@ def _group_words_into_lines(
     return lines
 
 
-def _generate_ass_subtitles(
-    words: List[Dict[str, Any]],
-    clip_start: float,
-    clip_duration: float = CLIP_DURATION_SECONDS
-) -> str:
-    """Generate ASS subtitle content with karaoke timing and scrolling.
-
-    Scrolling behavior:
-    - Initially, VISIBLE_LINES (12) are displayed centered on screen from time 0
-    - Scrolling starts when playback reaches 50% of VISIBLE_LINES (line 6)
-    - Text scrolls upward to reveal remaining content
-    - Karaoke highlighting is controlled by \\kf tags, not line start/end times
-    """
-    lines = _group_words_into_lines(words)
-    total_lines = len(lines)
-
-    # Calculate if scrolling is needed
-    needs_scroll = total_lines > VISIBLE_LINES
-    visible_height = VISIBLE_LINES * LINE_HEIGHT_PX
-
-    # Top padding (10% of height)
-    top_padding = int(VIDEO_HEIGHT * VERTICAL_PADDING_RATIO)
-    # First line starts at top padding
-    first_line_y = top_padding
-
-    # ASS header with styling
-    header = f"""[Script Info]
-Title: Clip Transcript
-ScriptType: v4.00+
-PlayResX: {VIDEO_WIDTH}
-PlayResY: {VIDEO_HEIGHT}
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{FONT_SIZE},&H0080FFFF,&H00A0A0A0,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,8,10,10,20,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-    events = []
-
-    if needs_scroll:
-        # Calculate scroll parameters
-        # Scroll starts when we reach 50% of visible lines (line index VISIBLE_LINES // 2)
-        scroll_trigger_line = VISIBLE_LINES // 2  # Line 6 for 12 visible lines
-        extra_lines = total_lines - VISIBLE_LINES
-        scroll_distance = extra_lines * LINE_HEIGHT_PX
-
-        # Find the timestamp when scroll should start (when we reach the trigger line)
-        scroll_start_time = 0.0
-        if scroll_trigger_line < len(lines) and lines[scroll_trigger_line]:
-            first_word = lines[scroll_trigger_line][0]
-            scroll_start_time = first_word.get("start", clip_start) - clip_start
-
-        # Scroll duration: from trigger to end of clip
-        scroll_end_time = clip_duration
-        scroll_duration_ms = int((scroll_end_time - scroll_start_time) * 1000)
-        scroll_start_ms = int(scroll_start_time * 1000)
-
-        for line_idx, line_words in enumerate(lines):
-            if not line_words:
+def _load_font(size: int) -> ImageFont.FreeTypeFont:
+    """Load a system font with cross-platform fallback."""
+    font_paths = [
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    for path in font_paths:
+        if Path(path).exists():
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
                 continue
+    # Fallback to default font
+    return ImageFont.load_default()
 
-            # Get the time when this line starts speaking (for karaoke delay)
-            line_speak_start = line_words[0].get("start", clip_start) - clip_start
 
-            # Build karaoke text with timing
-            # Add initial delay so highlighting starts when the line is spoken
-            karaoke_text = ""
-            if line_speak_start > 0:
-                # Add delay in centiseconds before first word highlights
-                delay_cs = int(line_speak_start * 100)
-                karaoke_text = f"{{\\k{delay_cs}}}"
+def _prepare_background(cover_path: Path) -> Image.Image:
+    """Prepare background image: cover scaled/cropped + 80% black overlay."""
+    cover = Image.open(cover_path).convert("RGBA")
 
-            for w in line_words:
-                word_duration = int((w.get("end", 0) - w.get("start", 0)) * 100)
-                word_duration = max(10, word_duration)  # Minimum 0.1 second
-                karaoke_text += f"{{\\kf{word_duration}}}{w.get('word', '')} "
+    # Scale to cover video dimensions (cover entire frame)
+    cover_ratio = cover.width / cover.height
+    video_ratio = VIDEO_WIDTH / VIDEO_HEIGHT
 
-            # Initial position: all lines start centered
-            line_y_start = first_line_y + (line_idx * LINE_HEIGHT_PX)
-
-            # End position after scroll
-            line_y_end = line_y_start - scroll_distance
-
-            # ALL lines are visible from time 0 until end of clip
-            # The karaoke \k delay handles when highlighting starts
-            start_ts = _format_ass_time(0)
-            end_ts = _format_ass_time(clip_duration)
-
-            # Use move for scrolling effect
-            # Move starts at scroll_start_ms and ends at scroll_start_ms + scroll_duration_ms
-            move_tag = f"{{\\move({VIDEO_WIDTH // 2},{line_y_start},{VIDEO_WIDTH // 2},{line_y_end},{scroll_start_ms},{scroll_start_ms + scroll_duration_ms})}}"
-            events.append(
-                f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{move_tag}{karaoke_text.strip()}"
-            )
+    if cover_ratio > video_ratio:
+        # Cover is wider - scale by height, crop width
+        new_height = VIDEO_HEIGHT
+        new_width = int(VIDEO_HEIGHT * cover_ratio)
     else:
-        # No scrolling needed - center text vertically, all visible from start
-        for line_idx, line_words in enumerate(lines):
-            if not line_words:
-                continue
+        # Cover is taller - scale by width, crop height
+        new_width = VIDEO_WIDTH
+        new_height = int(VIDEO_WIDTH / cover_ratio)
 
-            # Get the time when this line starts speaking (for karaoke delay)
-            line_speak_start = line_words[0].get("start", clip_start) - clip_start
+    cover = cover.resize((new_width, new_height), Image.LANCZOS)
 
-            # Build karaoke text with timing
-            karaoke_text = ""
-            if line_speak_start > 0:
-                # Add delay in centiseconds before first word highlights
-                delay_cs = int(line_speak_start * 100)
-                karaoke_text = f"{{\\k{delay_cs}}}"
+    # Center crop to exact video dimensions
+    left = (cover.width - VIDEO_WIDTH) // 2
+    top = (cover.height - VIDEO_HEIGHT) // 2
+    cover = cover.crop((left, top, left + VIDEO_WIDTH, top + VIDEO_HEIGHT))
 
-            for w in line_words:
-                word_duration = int((w.get("end", 0) - w.get("start", 0)) * 100)
-                word_duration = max(10, word_duration)  # Minimum 0.1 second
-                karaoke_text += f"{{\\kf{word_duration}}}{w.get('word', '')} "
+    # Soft blur to de-emphasize cover text/details
+    if BACKGROUND_BLUR_RADIUS > 0:
+        cover = cover.filter(ImageFilter.GaussianBlur(radius=BACKGROUND_BLUR_RADIUS))
 
-            line_y = first_line_y + (line_idx * LINE_HEIGHT_PX)
+    # Apply 80% black overlay (204 = 0.8 * 255)
+    overlay = Image.new("RGBA", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0, 204))
+    cover = Image.alpha_composite(cover, overlay)
 
-            # All lines visible from time 0
-            start_ts = _format_ass_time(0)
-            end_ts = _format_ass_time(clip_duration)
+    return cover.convert("RGB")
 
-            pos_tag = f"{{\\pos({VIDEO_WIDTH // 2},{line_y})}}"
-            events.append(
-                f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{pos_tag}{karaoke_text.strip()}"
-            )
 
-    # Debug: print events array
-    if os.getenv("DEBUG_ASS_EVENTS"):
-        logger.info("=== ASS Events Debug (%d lines, %d events) ===", total_lines, len(events))
-        for i, event in enumerate(events):
-            logger.info("Event %d: %s", i, event[:200] + "..." if len(event) > 200 else event)
-        logger.info("=== End ASS Events ===")
+def _render_frame(
+    background: Image.Image,
+    lines: List[List[Dict[str, Any]]],
+    current_time: float,
+    scroll_offset: int,
+    font: ImageFont.FreeTypeFont
+) -> Image.Image:
+    """Render a single video frame with text highlighting."""
+    frame = background.copy()
+    draw = ImageDraw.Draw(frame)
 
-    return header + "\n".join(events)
+    top_padding = int(VIDEO_HEIGHT * VERTICAL_PADDING_RATIO)
+    bottom_limit = VIDEO_HEIGHT - top_padding
+
+    for line_idx, line_words in enumerate(lines):
+        if not line_words:
+            continue
+
+        line_y = top_padding + (line_idx * LINE_HEIGHT_PX) - scroll_offset
+
+        # Skip lines outside visible area (with some margin for partial visibility)
+        if line_y < top_padding - LINE_HEIGHT_PX or line_y > bottom_limit:
+            continue
+
+        # Render each word with appropriate color based on timing
+        x_pos = 20  # Left margin
+        for word in line_words:
+            word_text = word.get("word", "")
+            word_start = word.get("start", 0)
+            word_end = word.get("end", 0)
+
+            # Determine highlight state
+            if current_time >= word_end:
+                color = (255, 255, 255)  # White - fully spoken
+            elif current_time >= word_start:
+                color = (255, 255, 0)  # Yellow - currently speaking
+            else:
+                color = (128, 128, 128)  # Gray - not yet spoken
+
+            draw.text((x_pos, line_y), word_text, font=font, fill=color)
+            # Get text width for positioning next word
+            bbox = draw.textbbox((0, 0), word_text + " ", font=font)
+            x_pos += bbox[2] - bbox[0]
+
+    return frame
+
+
+def _generate_frames(
+    lines: List[List[Dict[str, Any]]],
+    clip_start: float,
+    clip_duration: float,
+    background: Image.Image,
+    frames_dir: Path,
+    font: ImageFont.FreeTypeFont
+) -> int:
+    """Generate all video frames as JPEG files. Returns frame count."""
+    total_lines = len(lines)
+    needs_scroll = total_lines > VISIBLE_LINES
+
+    # Calculate scroll parameters
+    scroll_trigger_line = VISIBLE_LINES // 2
+    scroll_trigger_time = 0.0
+    if needs_scroll and scroll_trigger_line < len(lines) and lines[scroll_trigger_line]:
+        scroll_trigger_time = lines[scroll_trigger_line][0].get("start", clip_start) - clip_start
+
+    extra_lines = max(0, total_lines - VISIBLE_LINES)
+    max_scroll = extra_lines * LINE_HEIGHT_PX
+    scroll_duration = clip_duration - scroll_trigger_time if scroll_trigger_time < clip_duration else 1.0
+
+    total_frames = int(clip_duration * VIDEO_FPS)
+    frame_count = 0
+
+    logger.info("Generating %d frames (scroll=%s, trigger_time=%.1fs, max_scroll=%dpx)",
+                total_frames, needs_scroll, scroll_trigger_time, max_scroll)
+
+    for frame_idx in range(total_frames):
+        current_time = clip_start + (frame_idx / VIDEO_FPS)
+        elapsed = frame_idx / VIDEO_FPS
+
+        # Calculate scroll offset
+        scroll_offset = 0
+        if needs_scroll and elapsed > scroll_trigger_time and scroll_duration > 0:
+            scroll_progress = (elapsed - scroll_trigger_time) / scroll_duration
+            scroll_progress = min(1.0, max(0.0, scroll_progress))
+            scroll_offset = int(scroll_progress * max_scroll)
+
+        # Render frame
+        frame = _render_frame(background, lines, current_time, scroll_offset, font)
+
+        # Save frame as JPEG (quality 85 keeps size < 100KB)
+        frame_path = frames_dir / f"frame_{frame_idx:05d}.jpg"
+        frame.save(frame_path, "JPEG", quality=85)
+        frame_count += 1
+
+        # Log progress every 10%
+        if frame_idx > 0 and frame_idx % (total_frames // 10) == 0:
+            logger.debug("Frame generation progress: %d/%d (%.0f%%)",
+                        frame_idx, total_frames, 100 * frame_idx / total_frames)
+
+    logger.info("Generated %d frames in %s", frame_count, frames_dir)
+    return frame_count
 
 
 def _find_cover_image(book_folder: Path) -> Optional[Path]:
@@ -438,37 +451,26 @@ def _get_book_folder(pod_id: str, user_id: str, pgdb: Any) -> Optional[Path]:
 
 
 def _generate_video(
-    cover_path: Path,
+    frames_dir: Path,
     audio_path: Path,
-    ass_path: Path,
-    output_path: Path
+    output_path: Path,
+    fps: int = VIDEO_FPS
 ) -> None:
-    """Generate karaoke video using ffmpeg."""
-    # Escape paths for ffmpeg filter (Windows paths need special handling)
-    ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
-
-    filter_complex = (
-        f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
-        f"drawbox=x=0:y=0:w={VIDEO_WIDTH}:h={VIDEO_HEIGHT}:color=black@0.8:t=fill,"
-        f"ass='{ass_escaped}'[v]"
-    )
+    """Generate video from JPEG frames and audio using ffmpeg."""
+    frame_pattern = str(frames_dir / "frame_%05d.jpg")
 
     command = [
         "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", str(cover_path),
+        "-framerate", str(fps),
+        "-i", frame_pattern,
         "-i", str(audio_path),
-        "-filter_complex", filter_complex,
-        "-map", "[v]",
-        "-map", "1:a",
         "-c:v", "libx264",
         "-preset", "fast",
-        "-crf", "23",
+        "-crf", str(VIDEO_CRF),
+        "-tune", VIDEO_TUNE,
         "-c:a", "aac",
         "-b:a", "128k",
         "-shortest",
-        "-r", str(VIDEO_FPS),
         "-pix_fmt", "yuv420p",
         str(output_path)
     ]
@@ -477,7 +479,7 @@ def _generate_video(
     t0 = time.time()
 
     try:
-        proc = subprocess.run(command, check=True, capture_output=True, timeout=180)
+        proc = subprocess.run(command, check=True, capture_output=True, timeout=300)
         elapsed = time.time() - t0
         output_size = output_path.stat().st_size if output_path.exists() else 0
         logger.info("Video generated in %.1fs, size=%d bytes", elapsed, output_size)
@@ -488,7 +490,7 @@ def _generate_video(
         logger.error("ffmpeg video generation failed: %s", stderr[-500:])
         raise RuntimeError(f"Video generation failed: {stderr.strip()}")
     except subprocess.TimeoutExpired:
-        logger.error("ffmpeg video generation timed out after 180s")
+        logger.error("ffmpeg video generation timed out after 300s")
         raise RuntimeError("Video generation timed out")
 
 
@@ -500,7 +502,10 @@ def _generate_clip_video(
     user_id: str,
     pgdb: Any
 ) -> Optional[str]:
-    """Generate karaoke-style video for clip. Returns video URL or None."""
+    """Generate karaoke-style video for clip using frame-by-frame rendering.
+
+    Returns video URL or None.
+    """
     if not words:
         logger.info("No words to generate video for")
         return None
@@ -524,32 +529,44 @@ def _generate_clip_video(
     clips_dir.mkdir(parents=True, exist_ok=True)
 
     video_id = str(uuid.uuid4())
+    frames_dir = clips_dir / video_id
+    frames_dir.mkdir(parents=True, exist_ok=True)
     output_path = clips_dir / f"{video_id}.mp4"
 
-    # Generate ASS subtitles
-    ass_content = _generate_ass_subtitles(words, clip_start)
+    logger.info("Generating video: frames_dir=%s, output=%s", frames_dir, output_path)
 
-    # Write ASS to temp file
-    ass_file = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".ass",
-        delete=False,
-        encoding="utf-8"
+    # Prepare background (cover + overlay)
+    background = _prepare_background(cover_path)
+
+    # Load font
+    font = _load_font(FONT_SIZE)
+
+    # Group words into lines
+    lines = _group_words_into_lines(words)
+    logger.info("Grouped %d words into %d lines", len(words), len(lines))
+
+    # Generate all frames
+    t0 = time.time()
+    frame_count = _generate_frames(
+        lines=lines,
+        clip_start=clip_start,
+        clip_duration=CLIP_DURATION_SECONDS,
+        background=background,
+        frames_dir=frames_dir,
+        font=font
     )
-    try:
-        ass_file.write(ass_content)
-        ass_file.close()
-        ass_path = Path(ass_file.name)
+    logger.info("Frame generation took %.1fs for %d frames", time.time() - t0, frame_count)
 
-        # Generate video
-        _generate_video(
-            cover_path=cover_path,
-            audio_path=Path(clip_path),
-            ass_path=ass_path,
-            output_path=output_path
-        )
-    finally:
-        Path(ass_file.name).unlink(missing_ok=True)
+    # Generate video from frames
+    _generate_video(
+        frames_dir=frames_dir,
+        audio_path=Path(clip_path),
+        output_path=output_path
+    )
+
+    # Cleanup frames after successful video generation
+    shutil.rmtree(frames_dir, ignore_errors=True)
+    logger.debug("Cleaned up frames directory: %s", frames_dir)
 
     # Generate URL
     video_url = f"{audio_url_prefix.rstrip('/')}/{user_id}/clips/{video_id}.mp4"
