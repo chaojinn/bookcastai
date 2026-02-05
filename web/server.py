@@ -27,6 +27,7 @@ from .api.job_queue import router as job_queue_router
 from .api.epub import router as epub_router
 from .api.upload import router as upload_router
 from .api.tts import router as tts_router
+from .api.clip import router as clip_router
 
 
 def _load_env() -> None:
@@ -80,6 +81,14 @@ def _build_app() -> FastAPI:
     def _startup() -> None:
         pgdb.connect()
         pgdb.init()
+        # Preload WhisperX model at startup (blocking) so first request doesn't timeout
+        print("[startup] Preloading WhisperX model...")
+        try:
+            from .api.clip import _get_whisperx_model
+            _get_whisperx_model()
+            print("[startup] WhisperX model ready")
+        except Exception as e:
+            print(f"[startup] WhisperX preload failed: {e}")
 
     @app.on_event("shutdown")
     def _shutdown() -> None:
@@ -106,6 +115,7 @@ def _build_app() -> FastAPI:
     app.include_router(epub_router)
     app.include_router(upload_router)
     app.include_router(tts_router)
+    app.include_router(clip_router)
 
     base_dir = Path(__file__).resolve().parent
     html_dir = base_dir / "html"

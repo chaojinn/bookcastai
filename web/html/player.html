@@ -65,6 +65,9 @@ don't remove this comment after generating code
         <button class="icon-btn" id="restart-btn" aria-label="Restart from beginning">
           <i class="fa-solid fa-rotate-left"></i>
         </button>
+        <button class="icon-btn" id="clip-btn" aria-label="Generate clip transcript">
+          <i class="fa-solid fa-scissors"></i>
+        </button>
       </div>
     </div>
 
@@ -77,6 +80,19 @@ don't remove this comment after generating code
     </div>
 
     <audio id="audio-player" preload="auto"></audio>
+
+    <div id="clip-modal" class="clip-modal" style="display:none;">
+      <div class="clip-modal-content">
+        <div class="clip-modal-header">
+          <h5>Clip Transcription</h5>
+          <button class="icon-btn ghost" id="clip-close" aria-label="Close">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div id="clip-status" class="clip-status">Generating clip...</div>
+        <div id="clip-words" class="clip-words"></div>
+      </div>
+    </div>
   </div>
 
   <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
@@ -93,6 +109,11 @@ don't remove this comment after generating code
       const rewindBtn = document.getElementById('rewind-btn');
       const forwardBtn = document.getElementById('forward-btn');
       const restartBtn = document.getElementById('restart-btn');
+      const clipBtn = document.getElementById('clip-btn');
+      const clipModal = document.getElementById('clip-modal');
+      const clipClose = document.getElementById('clip-close');
+      const clipStatus = document.getElementById('clip-status');
+      const clipWords = document.getElementById('clip-words');
       const queueListEl = document.getElementById('queue-list');
       const queueCountEl = document.getElementById('queue-count');
       const timeReadout = document.getElementById('time-readout');
@@ -335,6 +356,7 @@ don't remove this comment after generating code
         rewindBtn.disabled = !hasQueue;
         forwardBtn.disabled = !hasQueue;
         restartBtn.disabled = !hasQueue;
+        clipBtn.disabled = !hasQueue;
         progressEl.disabled = !hasQueue;
       }
 
@@ -619,6 +641,82 @@ don't remove this comment after generating code
           window.parent?.postMessage({ type: 'queue-updated' }, '*');
         } catch (err) {
           console.error(err);
+        }
+      });
+
+      clipBtn.addEventListener('click', async () => {
+        console.log('[clip] button clicked, queue.length=', queue.length, 'currentEpisode=', currentEpisode);
+        if (!queue.length) { console.warn('[clip] no queue, aborting'); return; }
+        const item = getCurrentItem();
+        console.log('[clip] getCurrentItem=', item);
+        if (!item) { console.warn('[clip] no current item, aborting'); return; }
+        const ep = resolveEpisode(item);
+        console.log('[clip] resolveEpisode=', ep);
+        if (!ep.audioUrl) { console.warn('[clip] no audioUrl, aborting'); return; }
+
+        audioEl.pause();
+        const timestamp = audioEl.currentTime || 0;
+        console.log('[clip] timestamp=', timestamp, 'audioUrl=', ep.audioUrl);
+
+        clipStatus.textContent = `Generating clip from ${formatSeconds(timestamp)}...`;
+        clipStatus.style.display = '';
+        clipWords.innerHTML = '';
+        clipModal.style.display = 'flex';
+
+        try {
+          console.log('[clip] sending POST /api/clip...');
+          const res = await fetchWithRefresh('/api/clip', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              audio_url: ep.audioUrl,
+              timestamp: timestamp,
+              pod_id: item.pod_id,
+              episode_idx: item.episode_idx,
+            }),
+          });
+
+          console.log('[clip] response status=', res.status);
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Request failed' }));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+          }
+
+          const data = await res.json();
+          console.log('[clip] received', data.words?.length, 'words');
+          console.log('[clip] result:', data);
+          clipStatus.style.display = 'none';
+
+          if (!data.words || data.words.length === 0) {
+            clipWords.textContent = 'No speech detected in this clip.';
+          } else {
+            clipWords.innerHTML = '';
+            data.words.forEach(w => {
+              const span = document.createElement('span');
+              span.className = 'clip-word';
+              span.textContent = w.word + ' ';
+              span.title = `${formatSeconds(w.start)} - ${formatSeconds(w.end)}`;
+              span.addEventListener('click', () => {
+                audioEl.currentTime = w.start;
+                updateTime();
+              });
+              clipWords.appendChild(span);
+            });
+          }
+        } catch (err) {
+          clipStatus.textContent = `Error: ${err.message}`;
+          clipStatus.style.display = '';
+          console.error('Clip generation failed:', err);
+        }
+      });
+
+      clipClose.addEventListener('click', () => {
+        clipModal.style.display = 'none';
+      });
+
+      clipModal.addEventListener('click', (e) => {
+        if (e.target === clipModal) {
+          clipModal.style.display = 'none';
         }
       });
 

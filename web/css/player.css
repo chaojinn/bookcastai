@@ -75,7 +75,7 @@ h5 {
 }
 .control-bar {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   gap: 8px;
 }
 .icon-btn {
@@ -267,7 +267,7 @@ audio {
     text-overflow: ellipsis;
   }
   .control-bar {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
   }
   .icon-btn {
     height: 30px;
@@ -287,4 +287,51 @@ audio {
   body.expanded {
     min-height: 50vh;
   }
+}
+.clip-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.clip-modal-content {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  max-width: 520px;
+  width: 90%;
+  max-height: 70vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+}
+.clip-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.clip-modal-header h5 {
+  margin: 0;
+}
+.clip-status {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-bottom: 10px;
+}
+.clip-words {
+  line-height: 1.8;
+  font-size: 1rem;
+}
+.clip-word {
+  cursor: pointer;
+  padding: 2px 1px;
+  border-radius: 3px;
+  transition: background 0.15s ease;
+}
+.clip-word:hover {
+  background: rgba(56, 189, 248, 0.2);
 }
