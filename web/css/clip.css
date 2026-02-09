@@ -1,0 +1,124 @@
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --accent: #38bdf8;
+  --muted: #475569;
+  --border: #e2e8f0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: #1e293b;
+  padding: 20px;
+}
+.clip-page {
+  max-width: 640px;
+  margin: 0 auto;
+}
+.clip-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.clip-header h4 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+#back-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  transition: background 0.15s;
+}
+#back-btn:hover {
+  background: var(--border);
+}
+.clip-status {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-bottom: 12px;
+}
+.clip-hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+.clip-words {
+  line-height: 1.8;
+  font-size: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.clip-word {
+  cursor: pointer;
+  padding: 2px 2px;
+  border-radius: 3px;
+  transition: background 0.15s ease;
+}
+.clip-word:hover {
+  background: rgba(56, 189, 248, 0.2);
+}
+.clip-word.selected {
+  background: rgba(56, 189, 248, 0.4);
+  font-weight: 600;
+}
+.clip-word.range {
+  background: rgba(56, 189, 248, 0.15);
+}
+.selection-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.selection-info span {
+  font-weight: 600;
+  color: #1e293b;
+}
+.clip-actions {
+  margin-bottom: 20px;
+}
+#create-video-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.video-status {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-bottom: 12px;
+}
+.video-result {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+.video-result video {
+  width: 100%;
+  max-height: 400px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  background: #000;
+}
+.video-result .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

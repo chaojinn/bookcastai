@@ -46,7 +46,21 @@ class ClipResponse(BaseModel):
     words: List[WordSegment]
     clip_start: float
     clip_end: float
-    video_url: Optional[str] = None
+
+
+class ClipVideoRequest(BaseModel):
+    audio_url: str = Field(..., min_length=1)
+    timestamp: float = Field(..., ge=0)
+    pod_id: str = Field(..., min_length=1)
+    pod_title: str = Field(..., min_length=1)
+    episode_idx: int
+    start_time: float = Field(..., ge=0)
+    end_time: float = Field(..., ge=0)
+    words: List[WordSegment]
+
+
+class ClipVideoResponse(BaseModel):
+    video_url: str
 
 
 def _get_whisperx_model():
@@ -216,7 +230,8 @@ def _transcribe_clip(clip_path: str, timestamp_offset: float) -> List[Dict[str, 
 VIDEO_WIDTH = 406  # Must be even for H.264 (closest to ideal 405 for 9:16)
 VIDEO_HEIGHT = 720
 VIDEO_FPS = 24
-VIDEO_CRF = 18  # Lower CRF preserves sharp text edges
+RENDER_FPS = 4   # Generate 4 unique frames per second; each held for 6 video frames
+VIDEO_CRF = 18   # Lower CRF preserves sharp text edges
 VIDEO_TUNE = "stillimage"  # Optimize encoder for sharp static graphics
 BACKGROUND_BLUR_RADIUS = 6  # Gaussian blur to soften cover text/details
 MAX_CHARS_PER_LINE = 30
@@ -380,15 +395,15 @@ def _generate_frames(
     max_scroll = extra_lines * LINE_HEIGHT_PX
     scroll_duration = clip_duration - scroll_trigger_time if scroll_trigger_time < clip_duration else 1.0
 
-    total_frames = int(clip_duration * VIDEO_FPS)
+    total_frames = int(clip_duration * RENDER_FPS)
     frame_count = 0
 
-    logger.info("Generating %d frames (scroll=%s, trigger_time=%.1fs, max_scroll=%dpx)",
-                total_frames, needs_scroll, scroll_trigger_time, max_scroll)
+    logger.info("Generating %d frames at %d FPS (scroll=%s, trigger_time=%.1fs, max_scroll=%dpx)",
+                total_frames, RENDER_FPS, needs_scroll, scroll_trigger_time, max_scroll)
 
     for frame_idx in range(total_frames):
-        current_time = clip_start + (frame_idx / VIDEO_FPS)
-        elapsed = frame_idx / VIDEO_FPS
+        current_time = clip_start + (frame_idx / RENDER_FPS)
+        elapsed = frame_idx / RENDER_FPS
 
         # Calculate scroll offset
         scroll_offset = 0
@@ -406,7 +421,7 @@ def _generate_frames(
         frame_count += 1
 
         # Log progress every 10%
-        if frame_idx > 0 and frame_idx % (total_frames // 10) == 0:
+        if frame_idx > 0 and total_frames >= 10 and frame_idx % (total_frames // 10) == 0:
             logger.debug("Frame generation progress: %d/%d (%.0f%%)",
                         frame_idx, total_frames, 100 * frame_idx / total_frames)
 
@@ -461,13 +476,14 @@ def _generate_video(
 
     command = [
         "ffmpeg", "-y",
-        "-framerate", str(fps),
+        "-framerate", str(RENDER_FPS),
         "-i", frame_pattern,
         "-i", str(audio_path),
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", str(VIDEO_CRF),
         "-tune", VIDEO_TUNE,
+        "-r", str(fps),
         "-c:a", "aac",
         "-b:a", "128k",
         "-shortest",
@@ -500,11 +516,12 @@ def _generate_clip_video(
     clip_start: float,
     pod_id: str,
     user_id: str,
-    pgdb: Any
-) -> Optional[str]:
+    pgdb: Any,
+    clip_duration: float = CLIP_DURATION_SECONDS,
+) -> Optional[Dict[str, str]]:
     """Generate karaoke-style video for clip using frame-by-frame rendering.
 
-    Returns video URL or None.
+    Returns dict with video_url and video_file_path, or None.
     """
     if not words:
         logger.info("No words to generate video for")
@@ -550,7 +567,7 @@ def _generate_clip_video(
     frame_count = _generate_frames(
         lines=lines,
         clip_start=clip_start,
-        clip_duration=CLIP_DURATION_SECONDS,
+        clip_duration=clip_duration,
         background=background,
         frames_dir=frames_dir,
         font=font
@@ -571,11 +588,11 @@ def _generate_clip_video(
     # Generate URL
     video_url = f"{audio_url_prefix.rstrip('/')}/{user_id}/clips/{video_id}.mp4"
     logger.info("Video generated: %s", video_url)
-    return video_url
+    return {"video_url": video_url, "video_file_path": str(output_path)}
 
 
-def _process_clip(audio_url: str, timestamp: float, pod_id: str, user_id: str, pgdb: Any) -> Dict[str, Any]:
-    logger.info("=== Clip generation started: url=%s, timestamp=%.1f ===", audio_url, timestamp)
+def _process_clip(audio_url: str, timestamp: float) -> Dict[str, Any]:
+    logger.info("=== Clip transcription started: url=%s, timestamp=%.1f ===", audio_url, timestamp)
     t0 = time.time()
 
     audio_source = _resolve_audio_path(audio_url)
@@ -585,50 +602,75 @@ def _process_clip(audio_url: str, timestamp: float, pod_id: str, user_id: str, p
 
     try:
         words = _transcribe_clip(clip_path, timestamp)
-
-        # Generate karaoke video
-        video_url = None
-        try:
-            video_url = _generate_clip_video(
-                words=words,
-                clip_path=clip_path,
-                clip_start=timestamp,
-                pod_id=pod_id,
-                user_id=user_id,
-                pgdb=pgdb
-            )
-        except Exception as e:
-            logger.warning("Video generation failed (continuing without video): %s", e)
-            # Graceful degradation - return words without video
-
     finally:
         Path(clip_path).unlink(missing_ok=True)
         logger.debug("Temp file cleaned up: %s", clip_path)
 
-    logger.info("=== Clip generation finished in %.1fs, %d words ===", time.time() - t0, len(words))
+    logger.info("=== Clip transcription finished in %.1fs, %d words ===", time.time() - t0, len(words))
     return {
         "words": words,
         "clip_start": timestamp,
         "clip_end": timestamp + CLIP_DURATION_SECONDS,
-        "video_url": video_url,
     }
+
+
+def _process_clip_video(
+    audio_url: str,
+    start_time: float,
+    end_time: float,
+    words: List[Dict[str, Any]],
+    pod_id: str,
+    pod_title: str,
+    user_id: str,
+    pgdb: Any,
+) -> Dict[str, str]:
+    """Generate video for user-selected word range. Returns dict with video_url and video_file_path."""
+    duration = end_time - start_time
+    if duration <= 0 or duration > CLIP_DURATION_SECONDS:
+        raise RuntimeError(f"Invalid clip duration: {duration:.1f}s")
+
+    audio_source = _resolve_audio_path(audio_url)
+    clip_path = _extract_clip(audio_source, start_time, duration=int(duration) + 1)
+
+    try:
+        result = _generate_clip_video(
+            words=words,
+            clip_path=clip_path,
+            clip_start=start_time,
+            pod_id=pod_id,
+            user_id=user_id,
+            pgdb=pgdb,
+            clip_duration=duration,
+        )
+        if not result:
+            raise RuntimeError("Video generation returned no URL")
+
+        pgdb.insert_clip(
+            user_id=user_id,
+            pod_title=pod_title,
+            start_timestamp=start_time,
+            end_timestamp=end_time,
+            transcript=words,
+            video_file_path=result["video_file_path"],
+            video_url=result["video_url"],
+        )
+
+        return result
+    finally:
+        Path(clip_path).unlink(missing_ok=True)
 
 
 @router.post("/api/clip", response_model=ClipResponse)
 async def generate_clip(
     payload: ClipRequest,
-    request: Request,
-    session: SessionContainer = Depends(verify_session()),
+    _session: SessionContainer = Depends(verify_session()),
 ) -> Dict[str, Any]:
     global _whisperx_lock
     if _whisperx_lock is None:
         _whisperx_lock = asyncio.Lock()
 
-    user_id = session.get_user_id()
-    pgdb = request.app.state.pgdb
-
-    logger.info("POST /api/clip received: pod_id=%s, episode_idx=%d, timestamp=%.1f, audio_url=%s, user_id=%s",
-                payload.pod_id, payload.episode_idx, payload.timestamp, payload.audio_url, user_id)
+    logger.info("POST /api/clip received: pod_id=%s, episode_idx=%d, timestamp=%.1f, audio_url=%s",
+                payload.pod_id, payload.episode_idx, payload.timestamp, payload.audio_url)
 
     if payload.timestamp > 86400:
         raise HTTPException(status_code=400, detail="Timestamp exceeds maximum.")
@@ -644,16 +686,52 @@ async def generate_clip(
                 _process_clip,
                 payload.audio_url,
                 payload.timestamp,
-                payload.pod_id,
-                user_id,
-                pgdb,
             )
         except RuntimeError as exc:
-            logger.error("Clip generation RuntimeError: %s", exc)
+            logger.error("Clip transcription RuntimeError: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc))
         except Exception:
-            logger.exception("Clip generation failed with unexpected error")
-            raise HTTPException(status_code=500, detail="Clip generation failed.")
+            logger.exception("Clip transcription failed with unexpected error")
+            raise HTTPException(status_code=500, detail="Clip transcription failed.")
 
     logger.info("POST /api/clip returning %d words", len(result.get("words", [])))
     return result
+
+
+@router.post("/api/clip_video", response_model=ClipVideoResponse)
+async def generate_clip_video(
+    payload: ClipVideoRequest,
+    request: Request,
+    session: SessionContainer = Depends(verify_session()),
+) -> Dict[str, Any]:
+    user_id = session.get_user_id()
+    pgdb = request.app.state.pgdb
+
+    logger.info("POST /api/clip_video received: pod_id=%s, start=%.1f, end=%.1f",
+                payload.pod_id, payload.start_time, payload.end_time)
+
+    if payload.start_time >= payload.end_time:
+        raise HTTPException(status_code=400, detail="start_time must be less than end_time")
+    if payload.end_time - payload.start_time > CLIP_DURATION_SECONDS:
+        raise HTTPException(status_code=400, detail="Selected range too long")
+
+    try:
+        result = await asyncio.to_thread(
+            _process_clip_video,
+            payload.audio_url,
+            payload.start_time,
+            payload.end_time,
+            [w.model_dump() for w in payload.words],
+            payload.pod_id,
+            payload.pod_title,
+            user_id,
+            pgdb,
+        )
+    except RuntimeError as exc:
+        logger.error("Clip video RuntimeError: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        logger.exception("Clip video generation failed")
+        raise HTTPException(status_code=500, detail="Video generation failed.")
+
+    return {"video_url": result["video_url"]}

@@ -1,23 +1,7 @@
-1.clip&share function
-in player.html add a button to generate clip
-when clicked, pause the playback, get the current timestamp of playback of this episode, send a POST request to /api/clip
-backend use ffpmeg to get a audio clip from that timestamp + 30 seconds
-run whisperx model to get word level timestamp 
-send the transcription back to client in json format.
-if any new dependency needed, add to requirements.txt
 
-in api/clip, after transcript generated. generate a video using ffpmeg, it shall use the cover image of the book as background, 
-then add a layer of 80% tranparent black layer on top 
-then show the transcription on top that overlay in white font
-the video shall be 9:16 ratio with height 720px, in h264 mp4 format, 24fps
-if transcription is too long to display, it shall scroll up during playback
-text shall be highlighted according to word level timestamp.
-the generated video shall be saved to basedir/userid/clips with a uuid as file name. return the url of that file to client
-
-
-generate background image/images using nano banana (optional)
-generate a video displaying transcript of the clip and high lighting each word according to word level timestamp over time
-buttons to share the clip to sns
 
 
 3. a button in pod_episodes to get rss xml link
+
+4.enhance clip gui
+5.fix redirect to login

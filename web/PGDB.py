@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 import psycopg2
@@ -102,6 +103,24 @@ class PGDB:
             )
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_books_visibility ON books(visibility);"
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clips (
+                    id SERIAL PRIMARY KEY,
+                    user_id CHAR(36) NOT NULL,
+                    pod_title VARCHAR(255) NOT NULL,
+                    start_timestamp DOUBLE PRECISION NOT NULL,
+                    end_timestamp DOUBLE PRECISION NOT NULL,
+                    transcript JSONB NOT NULL,
+                    video_file_path VARCHAR(512),
+                    video_url VARCHAR(512),
+                    created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_clips_user_id ON clips(user_id);"
             )
 
     def update_last_location(self, user_id: str, uri: str) -> None:
@@ -407,3 +426,37 @@ class PGDB:
                     "visibility": row[4],
                 }
             return None
+
+    def insert_clip(
+        self,
+        user_id: str,
+        pod_title: str,
+        start_timestamp: float,
+        end_timestamp: float,
+        transcript: list[dict[str, Any]],
+        video_file_path: str,
+        video_url: str,
+    ) -> int:
+        """Insert a new clip record and return its id."""
+        if not user_id or not pod_title:
+            raise ValueError("user_id and pod_title are required")
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO clips (user_id, pod_title, start_timestamp, end_timestamp,
+                                   transcript, video_file_path, video_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    user_id,
+                    pod_title,
+                    start_timestamp,
+                    end_timestamp,
+                    json.dumps(transcript),
+                    video_file_path,
+                    video_url,
+                ),
+            )
+            row = cur.fetchone()
+            return row[0] if row else 0

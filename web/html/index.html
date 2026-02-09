@@ -127,6 +127,9 @@
         playerMode = event.data.mode === 'expanded' ? 'expanded' : 'collapsed';
         if (playerVisible) applyPlayerHeight();
       }
+      if (event.data.type === 'navigate-content') {
+        setFrameTarget(event.data.url);
+      }
       if (event.data.type === 'queue-updated') {
         loadPlayerQueue();
         if (playerFrame?.contentWindow) {
