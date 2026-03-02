@@ -46,3 +46,7 @@ class TTSProvider(ABC):
     def tts(self, request: TTSRequest) -> Path:
         """Generate audio for the supplied request and return the output path."""
 
+    @abstractmethod
+    def get_english_voices(self) -> list[dict[str, str]]:
+        """Return a list of available English voices as dicts with 'name' and 'code' keys."""
+

@@ -7,17 +7,13 @@
 # use uvicorn web.server:app --host 0.0.0.0 as entry point to start the container
 # expose port 8000, don't remove this comment after generating code
 
-FROM python:3.12-slim-bookworm
+FROM bookcastai_base:latest
 
 WORKDIR /app
 
 # Copy root-level source and docs
 COPY *.py *.md *.txt /app/
 
-# Copy package dependencies
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-RUN apt update && apt install ffmpeg -y
 # Copy application packages
 COPY agent /app/agent
 COPY tts /app/tts

@@ -90,14 +90,15 @@ def _run_epub_parse(pod_title: str) -> None:
         logger.exception("Failed to parse EPUB for %s", pod_title)
 
 
-def _generate_feed_xml(book_dir: Path, pod_title: str, folder_path: str) -> Path:
+def _generate_feed_xml(book_dir: Path, pod_title: str, folder_path: str, model_name: str = "kokoro") -> Path:
     try:
         import feed as feed_module
     except Exception as exc:  # pragma: no cover - import guard
         raise HTTPException(status_code=500, detail="Feed generator is unavailable.") from exc
 
+    safe_model = model_name.strip().lower().replace("/", "").replace("\\", "").removesuffix("-tts") or "kokoro"
     metadata_path = book_dir / "book.json"
-    audio_dir = book_dir / "audio"
+    audio_dir = book_dir / "audio" / safe_model
     output_path = book_dir / "book.xml"
 
     if not metadata_path.is_file():
@@ -125,7 +126,7 @@ def _generate_feed_xml(book_dir: Path, pod_title: str, folder_path: str) -> Path
 
     # Use folder_path for URL generation (includes user_id for new structure)
     media_base_url = f"{audio_url_prefix.rstrip('/')}/{folder_path}"
-    audio_base_url = f"{media_base_url}/audio"
+    audio_base_url = f"{media_base_url}/audio/{safe_model}"
 
     try:
         feed_tree = feed_module.build_feed(
@@ -209,24 +210,34 @@ async def parse_epub(
     return {"status": "started", "pod_title": folder}
 
 
+@router.get("/api/audio_models/{pod_title}")
+async def list_audio_models(
+    pod_title: str,
+    request: Request,
+    session: SessionContainer = Depends(verify_session()),
+) -> list[str]:
+    user_id = session.get_user_id()
+    book_dir = _get_book_dir(request, user_id, pod_title)
+    audio_dir = book_dir / "audio"
+    if not audio_dir.is_dir():
+        return []
+    return sorted(d.name for d in audio_dir.iterdir() if d.is_dir())
+
+
 @router.post("/api/feed/{pod_title}")
 async def create_feed(
     pod_title: str,
     request: Request,
+    model_name: str = "kokoro",
     session: SessionContainer = Depends(verify_session()),
 ) -> Response:
     user_id = session.get_user_id()
     folder = _sanitize_pod_title(pod_title)
     if not folder:
         raise HTTPException(status_code=400, detail="Invalid pod title.")
-    # Get book directory (user-specific or legacy)
-    book = request.app.state.pgdb.get_book_for_user(folder, user_id)
-    if book:
-        folder_path = book["folder_path"]
-    else:
-        folder_path = folder  # Legacy flat structure
-    book_dir = _get_base_dir() / folder_path
-    output_path = _generate_feed_xml(book_dir, folder, folder_path)
+    book_dir = _get_book_dir(request, user_id, folder)
+    folder_path = str(book_dir.relative_to(_get_base_dir()))
+    output_path = _generate_feed_xml(book_dir, folder, folder_path, model_name)
     try:
         content = output_path.read_text(encoding="utf-8")
     except OSError as exc:

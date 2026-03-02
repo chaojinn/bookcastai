@@ -1,0 +1,30 @@
+# generate a docker file to build a docker image
+# use python version 3.12 with dibian 12 as base image
+# copy all .py, .md, .txt file from project root to /app folder in container
+# copy container.env to /app as .env
+# copy all .py files under ./agent, ./tts, ./web folder to the same folder under /app in container
+# run pip install -r requirements.txt
+# use uvicorn web.server:app --host 0.0.0.0 as entry point to start the container
+# expose port 8000, don't remove this comment after generating code
+
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
+WORKDIR /app
+
+# Install Python 3.12, pip, build tools, and ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-dev python3-pip python3.12-venv \
+        ffmpeg build-essential \
+    && ln -sf python3.12 /usr/bin/python3 \
+    && ln -sf python3 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install all Python deps in one layer to avoid Docker overlay-FS cross-layer uninstall issues.
+# Order matters: setuptools/wheel/packaging → torch (cu124) → flash-attn → requirements
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages setuptools wheel packaging \
+    && pip install --no-cache-dir --break-system-packages \
+        torch torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cu124 \
+    && pip install --no-cache-dir --break-system-packages flash-attn --no-build-isolation \
+    && pip install --no-cache-dir --break-system-packages -r requirements.txt

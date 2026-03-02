@@ -12,8 +12,14 @@
 <body>
   <div class="page-shell">
     <header class="header">
-      <h1 id="pod-title">Podcast Episodes</h1>
-      <p class="subtitle" id="pod-subtitle">Loading podcast info…</p>
+      <div>
+        <h1 id="pod-title">Podcast Episodes</h1>
+        <p class="subtitle" id="pod-subtitle">Loading podcast info…</p>
+      </div>
+      <div id="model-selector" class="d-none d-flex align-items-center gap-2">
+        <label class="form-label mb-0 text-secondary small" for="model-select">Model</label>
+        <select class="form-select form-select-sm" id="model-select" style="width:auto"></select>
+      </div>
     </header>
 
     <div class="status" id="status"></div>
@@ -48,6 +54,7 @@
       let table = null;
       let podEpisodes = [];
       let pendingQueueRefresh = false;
+      let publishingModel = false;
 
       function showStatus(message, isError = false) {
         statusEl.textContent = message;
@@ -227,12 +234,56 @@
         }
       }
 
+      async function loadModels() {
+        if (!podId) return;
+        try {
+          const res = await fetchWithRefresh(`/api/audio_models/${encodeURIComponent(podId)}`);
+          if (!res.ok) return;
+          const models = await res.json();
+          if (!Array.isArray(models) || models.length < 2) return;
+          const sel = document.getElementById('model-select');
+          sel.innerHTML = '';
+          models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = m;
+            sel.appendChild(opt);
+          });
+          document.getElementById('model-selector').classList.remove('d-none');
+        } catch (err) {
+          console.warn('Failed to load audio models', err);
+        }
+      }
+
+      async function switchModel(modelName) {
+        if (!podId || publishingModel) return;
+        publishingModel = true;
+        showStatus(`Switching to model "${modelName}"…`);
+        try {
+          const res = await fetchWithRefresh(
+            `/api/feed/${encodeURIComponent(podId)}?model_name=${encodeURIComponent(modelName)}`,
+            { method: 'POST' }
+          );
+          if (!res.ok) throw new Error(`Feed publish failed: ${res.status}`);
+          await loadPod();
+        } catch (err) {
+          showStatus('Failed to switch model.', true);
+          console.error(err);
+        } finally {
+          publishingModel = false;
+        }
+      }
+
       window.addEventListener('DOMContentLoaded', () => {
         recordLocation();
         loadPod();
+        loadModels();
         $('#episodes-table').on('click', '.btn-add-queue', function () {
           const idx = this.getAttribute('data-episode-idx');
           addToQueue(idx);
+        });
+        document.getElementById('model-select').addEventListener('change', function () {
+          switchModel(this.value);
         });
       });
 

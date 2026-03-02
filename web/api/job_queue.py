@@ -201,6 +201,8 @@ def _resolve_tts_provider(model_name: Any) -> Optional[str]:
         return "openai"
     if normalized in {"dia", "dia-tts"}:
         return "dia"
+    if normalized in {"qwen3", "qwen3-tts"}:
+        return "qwen3"
     return None
 
 
@@ -399,6 +401,14 @@ async def _handle_tts(job: Job) -> None:
 
     overwrite = _to_bool(params.get("overwrite"))
 
+    temperature_raw = params.get("temperature")
+    temperature: float | None = None
+    if temperature_raw is not None:
+        try:
+            temperature = float(temperature_raw)
+        except (TypeError, ValueError):
+            pass  # ignore invalid value; provider will use its default
+
     base_dir = os.getenv("PODS_BASE")
     if not base_dir:
         job.status = "fail"
@@ -451,6 +461,7 @@ async def _handle_tts(job: Job) -> None:
             speed=speed,
             overwrite=overwrite,
             provider_name=provider_name,
+            temperature=temperature,
             publish_progress=publish_progress,
         )
     except Exception as exc:
@@ -565,6 +576,22 @@ async def cancel_job(
     if job.task and not job.task.done():
         job.task.cancel()
     return {"id": job_id, "status": job.status}
+
+
+@router.get("/api/jobs")
+async def list_jobs(
+    session: SessionContainer = Depends(verify_session()),
+) -> List[Dict[str, Any]]:
+    _ensure_async_state()
+    if _queue_lock is None:
+        return []
+    async with _queue_lock:
+        jobs = [
+            {**_jobs[jid].to_dict(), "queue_pos": _queue_position(jid)}
+            for jid in reversed(list(_job_order))
+            if jid in _jobs
+        ]
+    return jobs
 
 
 register_job_handler("parse_epub", _handle_parse_epub)

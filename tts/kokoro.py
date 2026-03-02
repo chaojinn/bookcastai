@@ -237,6 +237,12 @@ class KokoroTTSProvider(TTSProvider):
         self._pipelines[lang_code] = pipeline
         return pipeline
 
+    def get_english_voices(self) -> list[dict[str, str]]:
+        return [
+            {"name": name, "code": code}
+            for name, code in zip(ENGLISH_VOICE_NAMES, ENGLISH_VOICE_CODES, strict=True)
+        ]
+
     @staticmethod
     def _write_wav(path: Path, waveform: "np.ndarray") -> None:
         sf = _ensure_soundfile()
@@ -268,13 +274,6 @@ class KokoroTTSProvider(TTSProvider):
             raise TTSProviderError(
                 f"Failed to write MP3 audio to '{path}'. Ensure ffmpeg is installed and on PATH. ({exc})"
             ) from exc
-
-
-def get_english_voices() -> list[dict[str, str]]:
-    return [
-        {"name": name, "code": code}
-        for name, code in zip(ENGLISH_VOICE_NAMES, ENGLISH_VOICE_CODES, strict=True)
-    ]
 
 
 def _ffmpeg_available() -> bool:

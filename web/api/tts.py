@@ -23,10 +23,18 @@ async def get_tts_voices(
     normalized = model_name.strip().lower()
     if normalized in {"kokoro-tts", "kokoro"}:
         try:
-            from tts.kokoro import get_english_voices
+            from tts.kokoro import KokoroTTSProvider
         except ImportError as exc:
             logger.exception("Failed to load Kokoro voices")
             raise HTTPException(status_code=500, detail="Kokoro voices unavailable.") from exc
-        return get_english_voices()
+        return KokoroTTSProvider().get_english_voices()
+
+    if normalized in {"qwen3-tts", "qwen3"}:
+        try:
+            from tts.qwen3.qwen3_provider import Qwen3TTSProvider
+        except ImportError as exc:
+            logger.exception("Failed to load Qwen3 voices")
+            raise HTTPException(status_code=500, detail="Qwen3 voices unavailable.") from exc
+        return Qwen3TTSProvider().get_english_voices()
 
     return []
