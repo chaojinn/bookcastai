@@ -451,6 +451,7 @@ def build_feed(
     book_title:str,
     audio_dir: Path,
     *,
+    cover_dir: Path | None = None,
     media_base_url: str | None,
     audio_base_url: str | None,
     feed_title: str | None,
@@ -507,7 +508,7 @@ def build_feed(
     metadata_cover_type = metadata.get("cover_image_media_type")
 
     if metadata_cover_b64 and metadata_cover_type:
-        cover_dir = audio_dir.parent if audio_dir.parent != audio_dir else audio_dir
+        cover_dir = cover_dir if cover_dir is not None else (audio_dir.parent if audio_dir.parent != audio_dir else audio_dir)
         cover_dir.mkdir(parents=True, exist_ok=True)
         media_type_lower = str(metadata_cover_type).lower()
         extension = {
@@ -545,7 +546,7 @@ def build_feed(
                 cover_image_url = cover_path.resolve().as_uri()
 
     if not cover_written and media_base_url:
-        cover_dir = audio_dir.parent if audio_dir.parent != audio_dir else audio_dir
+        cover_dir = cover_dir if cover_dir is not None else (audio_dir.parent if audio_dir.parent != audio_dir else audio_dir)
         cover_dir.mkdir(parents=True, exist_ok=True)
         cover_filename = "cover.jpg"
         cover_path = cover_dir / cover_filename

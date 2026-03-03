@@ -70,3 +70,20 @@ async def upload_book(
     visibility_val = 1 if visibility else 0
     request.app.state.pgdb.insert_book(user_id, folder, folder_path, visibility_val)
     return {"status": "ok", "folder": folder, "path": folder_path}
+
+
+@router.delete("/api/book/{book_id}")
+async def delete_book(
+    book_id: int,
+    request: Request,
+    session: SessionContainer = Depends(verify_session()),
+) -> dict[str, str]:
+    user_id = session.get_user_id()
+    folder_path = request.app.state.pgdb.delete_book(user_id, book_id)
+    if folder_path is None:
+        raise HTTPException(status_code=404, detail="Book not found or access denied.")
+    base_dir = _get_base_dir()
+    book_dir = base_dir / folder_path
+    if book_dir.exists():
+        shutil.rmtree(book_dir)
+    return {"status": "ok"}

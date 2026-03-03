@@ -19,6 +19,7 @@ COPY agent /app/agent
 COPY tts /app/tts
 COPY web /app/web
 
+
 EXPOSE 8000
 
 ENTRYPOINT ["uvicorn", "web.server:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -34,9 +34,14 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         <h1>TTS Generator</h1>
         <p class="subtitle">Pod: <span id="pod-title">Unknown</span></p>
       </div>
-      <button class="btn btn-primary" id="start-btn" disabled>
-        <i class="fa-solid fa-play"></i> Start TTS
-      </button>
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-secondary" id="publish-btn" disabled>
+          <i class="fa-solid fa-rss"></i> Publish Feed
+        </button>
+        <button class="btn btn-primary" id="start-btn" disabled>
+          <i class="fa-solid fa-play"></i> Start TTS
+        </button>
+      </div>
     </header>
 
     <section class="panel">
@@ -111,6 +116,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       const temperatureValue = $('#temperature-value');
       const overwriteCheck = $('#overwrite-check');
       const startBtn = $('#start-btn');
+      const publishBtn = $('#publish-btn');
       const statusBar = $('#status-bar');
       const progressBar = $('#progress-bar');
       const progressWrap = $('.progress');
@@ -176,6 +182,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       function updateControlState() {
         const canStart = pageReady && voicesAvailable && !jobRunning;
         startBtn.prop('disabled', !canStart);
+        publishBtn.prop('disabled', !pageReady || jobRunning || feedPublishing);
         modelSelect.prop('disabled', !pageReady || jobRunning);
         voiceSelect.prop('disabled', !pageReady || jobRunning || !voicesAvailable);
         speedRange.prop('disabled', !pageReady || jobRunning);
@@ -324,6 +331,29 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
           updateControlState();
         }
       }
+
+      async function publishFeed() {
+        if (!podTitle || feedPublishing) return;
+        feedPublishing = true;
+        updateControlState();
+        setStatus('Publishing feed...', 'info');
+        try {
+          const res = await fetchWithRefresh(
+            `/api/feed/${encodeURIComponent(podTitle)}?model_name=${encodeURIComponent(modelSelect.val())}`,
+            { method: 'POST' }
+          );
+          if (!res.ok) throw new Error(`Feed publish failed: ${res.status}`);
+          setStatus('Feed published successfully.', 'success');
+        } catch (err) {
+          console.warn('Failed to publish feed', err);
+          setStatus('Failed to publish feed.', 'error');
+        } finally {
+          feedPublishing = false;
+          updateControlState();
+        }
+      }
+
+      publishBtn.on('click', () => publishFeed());
 
       startBtn.on('click', async () => {
         if (!podTitle) return;

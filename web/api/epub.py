@@ -133,6 +133,7 @@ def _generate_feed_xml(book_dir: Path, pod_title: str, folder_path: str, model_n
             metadata,
             pod_title,
             audio_dir,
+            cover_dir=book_dir,
             media_base_url=media_base_url,
             audio_base_url=audio_base_url,
             feed_title=None,

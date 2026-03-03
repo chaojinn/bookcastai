@@ -31,7 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
 
 logger = logging.getLogger(__name__)
 
-_MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
+_MODEL_NAME = "openai/gpt-5.2"
 
 def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAgentState"]:
     def construct_book_structure(state: "EPUBAgentState") -> "EPUBAgentState":

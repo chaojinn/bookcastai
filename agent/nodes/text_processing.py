@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
 logger = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|\n+")
-_MODEL_NAME = "tngtech/deepseek-r1t2-chimera:free"
+_MODEL_NAME = "openai/gpt-5.2"
 _DATA_BASE = Path(os.getenv("PODS_BASE", "")).expanduser()
 _DEFAULT_CACHE_PATH = _DATA_BASE / "openroute_cache.json"
 _AI_CHUNK_PROMPT_TEMPLATE = (
