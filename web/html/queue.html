@@ -73,6 +73,7 @@
               <th style="width:160px">Progress</th>
               <th>Started</th>
               <th>Message</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="jobs-tbody">
@@ -134,7 +135,7 @@
       const tbody = $('#jobs-tbody');
       tbody.empty();
       if (jobs.length === 0) {
-        tbody.append('<tr><td colspan="5" class="text-center text-secondary py-4">No jobs yet.</td></tr>');
+        tbody.append('<tr><td colspan="6" class="text-center text-secondary py-4">No jobs yet.</td></tr>');
         return;
       }
       jobs.forEach(j => {
@@ -144,6 +145,9 @@
           : j.status === 'success'
             ? `<div class="progress" style="height:10px"><div class="progress-bar bg-success" style="width:100%"></div></div>`
             : `<div class="text-secondary small">${pct}%</div>`;
+        const removeBtn = j.status === 'queued'
+          ? `<button class="btn btn-sm btn-outline-danger btn-remove-job" data-job-id="${j.id}" title="Remove from queue"><i class="fa-solid fa-xmark"></i></button>`
+          : '';
         tbody.append(`
           <tr>
             <td class="font-monospace small">${$('<span>').text(j.command).html()}</td>
@@ -151,6 +155,7 @@
             <td>${bar}</td>
             <td class="text-secondary small text-nowrap">${fmtTime(j.started_at)}</td>
             <td class="text-secondary small">${$('<span>').text(j.progress_msg || '').html()}</td>
+            <td>${removeBtn}</td>
           </tr>
         `);
       });
@@ -170,9 +175,22 @@
       }
     }
 
+    async function removeJob(jobId) {
+      try {
+        const res = await fetchWithRefresh(`/api/job/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        await loadJobs();
+      } catch (err) {
+        console.warn('Failed to remove job', err);
+      }
+    }
+
     $(function () {
       loadJobs();
       setInterval(loadJobs, 2000);
+      $('#jobs-tbody').on('click', '.btn-remove-job', function () {
+        removeJob(this.getAttribute('data-job-id'));
+      });
     });
   </script>
 </body>
