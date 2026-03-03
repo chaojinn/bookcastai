@@ -30,6 +30,7 @@ class PodInfo(BaseModel):
     episodes: List[EpisodeInfo]
     is_owner: bool = False
     visibility: int = 1
+    book_id: int = 0
 
 
 router = APIRouter()
@@ -117,6 +118,7 @@ async def get_pods(
         if pod:
             pod.is_owner = (book["user_id"] == user_id)
             pod.visibility = book["visibility"]
+            pod.book_id = book["id"]
             pods.append(pod)
             seen_ids.add(pod.id)
 

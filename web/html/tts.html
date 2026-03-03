@@ -34,9 +34,14 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         <h1>TTS Generator</h1>
         <p class="subtitle">Pod: <span id="pod-title">Unknown</span></p>
       </div>
-      <button class="btn btn-primary" id="start-btn" disabled>
-        <i class="fa-solid fa-play"></i> Start TTS
-      </button>
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-secondary" id="publish-btn" disabled>
+          <i class="fa-solid fa-rss"></i> Publish Feed
+        </button>
+        <button class="btn btn-primary" id="start-btn" disabled>
+          <i class="fa-solid fa-play"></i> Start TTS
+        </button>
+      </div>
     </header>
 
     <section class="panel">
@@ -49,7 +54,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
           <label class="form-label" for="voice-select">Voice</label>
           <select class="form-select" id="voice-select" disabled></select>
         </div>
-        <div class="col-12 col-md-6">
+        <div class="col-12 col-md-6" id="speed-group">
           <label class="form-label" for="speed-range">
             Speed <span id="speed-value">1.00x</span>
           </label>
@@ -61,6 +66,20 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
             max="1.2"
             step="0.05"
             value="1.0"
+          >
+        </div>
+        <div class="col-12 col-md-6 d-none" id="temperature-group">
+          <label class="form-label" for="temperature-range">
+            Temperature <span id="temperature-value">0.80</span>
+          </label>
+          <input
+            class="form-range"
+            id="temperature-range"
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value="0.8"
           >
         </div>
         <div class="col-12 col-md-6 d-flex align-items-end">
@@ -93,8 +112,11 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       const voiceSelect = $('#voice-select');
       const speedRange = $('#speed-range');
       const speedValue = $('#speed-value');
+      const temperatureRange = $('#temperature-range');
+      const temperatureValue = $('#temperature-value');
       const overwriteCheck = $('#overwrite-check');
       const startBtn = $('#start-btn');
+      const publishBtn = $('#publish-btn');
       const statusBar = $('#status-bar');
       const progressBar = $('#progress-bar');
       const progressWrap = $('.progress');
@@ -160,9 +182,11 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       function updateControlState() {
         const canStart = pageReady && voicesAvailable && !jobRunning;
         startBtn.prop('disabled', !canStart);
+        publishBtn.prop('disabled', !pageReady || jobRunning || feedPublishing);
         modelSelect.prop('disabled', !pageReady || jobRunning);
         voiceSelect.prop('disabled', !pageReady || jobRunning || !voicesAvailable);
         speedRange.prop('disabled', !pageReady || jobRunning);
+        temperatureRange.prop('disabled', !pageReady || jobRunning);
         overwriteCheck.prop('disabled', !pageReady || jobRunning);
       }
 
@@ -171,7 +195,18 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         modelSelect.append(
           $('<option>', { value: 'kokoro-tts', text: 'Kokoro (kokoro-tts)' })
         );
+        modelSelect.append(
+          $('<option>', { value: 'qwen3-tts', text: 'Qwen3 (qwen3-tts)' })
+        );
         modelSelect.val('kokoro-tts');
+      }
+
+      function updateParamVisibility() {
+        const model = modelSelect.val();
+        const isQwen3 = model === 'qwen3-tts';
+        $('#speed-group').toggleClass('d-none', isQwen3);
+        $('#temperature-group').toggleClass('d-none', !isQwen3);
+        $('label[for="voice-select"]').text(isQwen3 ? 'Speaker' : 'Voice');
       }
 
       function setVoiceOptions(voices) {
@@ -269,7 +304,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
               feedPublishing = true;
               try {
                 setStatus('Publishing feed...', 'info');
-                const feedRes = await fetchWithRefresh(`/api/feed/${encodeURIComponent(podTitle)}`, {
+                const feedRes = await fetchWithRefresh(`/api/feed/${encodeURIComponent(podTitle)}?model_name=${encodeURIComponent(modelSelect.val())}`, {
                   method: 'POST'
                 });
                 if (!feedRes.ok) throw new Error('Feed publish failed');
@@ -297,6 +332,29 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         }
       }
 
+      async function publishFeed() {
+        if (!podTitle || feedPublishing) return;
+        feedPublishing = true;
+        updateControlState();
+        setStatus('Publishing feed...', 'info');
+        try {
+          const res = await fetchWithRefresh(
+            `/api/feed/${encodeURIComponent(podTitle)}?model_name=${encodeURIComponent(modelSelect.val())}`,
+            { method: 'POST' }
+          );
+          if (!res.ok) throw new Error(`Feed publish failed: ${res.status}`);
+          setStatus('Feed published successfully.', 'success');
+        } catch (err) {
+          console.warn('Failed to publish feed', err);
+          setStatus('Failed to publish feed.', 'error');
+        } finally {
+          feedPublishing = false;
+          updateControlState();
+        }
+      }
+
+      publishBtn.on('click', () => publishFeed());
+
       startBtn.on('click', async () => {
         if (!podTitle) return;
         const modelName = modelSelect.val();
@@ -309,7 +367,8 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         setStatus('Starting TTS job...', 'info');
         startProgress();
         try {
-          const res = await fetchWithRefresh('/api/job', {
+          const temperature = Number(temperatureRange.val());
+        const res = await fetchWithRefresh('/api/job', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -319,6 +378,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
                 { key: 'model_name', value: modelName },
                 { key: 'voice', value: voiceCode },
                 { key: 'speed', value: speed },
+                { key: 'temperature', value: temperature },
                 { key: 'overwrite', value: overwrite }
               ]
             })
@@ -343,12 +403,18 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         updateSpeedLabel(speedRange.val());
       });
 
+      temperatureRange.on('input', () => {
+        temperatureValue.text(Number(temperatureRange.val()).toFixed(2));
+      });
+
       modelSelect.on('change', () => {
+        updateParamVisibility();
         loadVoices(modelSelect.val());
       });
 
       populateModels();
       updateSpeedLabel(speedRange.val());
+      updateParamVisibility();
       updateControlState();
       checkParsedJson();
     });

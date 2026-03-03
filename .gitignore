@@ -45,3 +45,7 @@ pod_data/
 
 .cache/
 .claude/
+
+#qwen3
+tts/qwen3/data
+tts/qwen3/speakers

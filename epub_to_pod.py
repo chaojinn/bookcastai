@@ -24,6 +24,7 @@ def _build_provider(
     voice: str,
     lang: str,
     speed: float,
+    temperature: float | None = None,
 ) -> dict[str, object]:
     provider_name = provider_name.lower()
     if provider_name == "kokoro":
@@ -56,6 +57,13 @@ def _build_provider(
                 "top_k": 45,
             }
         )
+    elif provider_name == "qwen3":
+        from tts.qwen3.qwen3_provider import Qwen3TTSProvider  # type: ignore
+        provider = Qwen3TTSProvider()
+        p: dict = {"speaker": voice, "format": "mp3"}
+        if temperature is not None:
+            p["temperature"] = temperature
+        parameters = json.dumps(p)
     else:
         raise ValueError(f"Unsupported TTS provider: {provider_name}")
 
@@ -146,6 +154,7 @@ def convert_epub_to_pod(
     overwrite: bool,
     executable: str = "kokoro-tts",
     provider_name: str = "kokoro",
+    temperature: float | None = None,
     publish_progress: Callable[[int, str], None] | None = None,
 ) -> list[Path]:
     """Convert the selected EPUB chapters into MP3 files and return their paths."""
@@ -164,9 +173,9 @@ def convert_epub_to_pod(
         voice=voice,
         lang=lang,
         speed=speed,
+        temperature=temperature,
     )
-    #output_base = output_dir / provider_info["name"]
-    output_base = output_dir / "audio"
+    output_base = output_dir / "audio" / provider_info["name"]
     output_base.mkdir(parents=True, exist_ok=True)
 
     total_chapters = len(chapters)
@@ -208,6 +217,11 @@ def convert_epub_to_pod(
                     f"TTS synthesis failed for chapter '{title}' chunk {chunk_index}: {exc}"
                 ) from exc
             chunk_files.append(chunk_path)
+            if publish_progress is not None:
+                chapter_base = (chapter_index - 1) / total_chapters
+                chunk_fraction = (chunk_index / len(chunk_texts)) / total_chapters
+                progress = int((chapter_base + chunk_fraction) * 100)
+                publish_progress(progress, f"chapter {chapter_index}/{total_chapters}, chunk {chunk_index}/{len(chunk_texts)}")
 
         try:
             _concat_audio_files(title, chunk_files, destination)
@@ -216,9 +230,6 @@ def convert_epub_to_pod(
 
         print(f"Completed chapter {number}: {destination.name}")
         generated_files.append(destination)
-        if publish_progress is not None:
-            progress = int((chapter_index / total_chapters) * 100)
-            publish_progress(progress, f"processing chapter {chapter_index}/{total_chapters}")
 
     return generated_files
 

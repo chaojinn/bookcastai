@@ -102,7 +102,7 @@ python sft_12hz.py \
   --output_model_path ./output \
   --train_jsonl train_with_codes.jsonl \
   --batch_size 32 \
-  --lr 2e-6 \
+  --lr 5e-7 \
   --num_epochs 10 \
   --speaker_name my_speaker
 ```

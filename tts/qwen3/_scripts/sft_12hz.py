@@ -24,11 +24,6 @@ from dataset import TTSDataset
 from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 from safetensors.torch import save_file
 from torch.optim import AdamW
-try:
-    import bitsandbytes as bnb
-    _AdamW = bnb.optim.AdamW8bit
-except ImportError:
-    _AdamW = AdamW
 from torch.utils.data import DataLoader
 from transformers import AutoConfig
 
@@ -46,19 +41,14 @@ def train():
     parser.add_argument("--speaker_name", type=str, default="speaker_test")
     args = parser.parse_args()
 
-    accelerator = Accelerator(gradient_accumulation_steps=4, mixed_precision="bf16")
+    accelerator = Accelerator(gradient_accumulation_steps=4, mixed_precision="bf16", log_with="tensorboard")
 
     MODEL_PATH = args.init_model_path
 
-    try:
-        import flash_attn  # noqa: F401
-        _attn_impl = "flash_attention_2"
-    except ImportError:
-        _attn_impl = "sdpa"
     qwen3tts = Qwen3TTSModel.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
-        attn_implementation=_attn_impl,
+        attn_implementation="flash_attention_2",
     )
     config = AutoConfig.from_pretrained(MODEL_PATH)
 
@@ -67,8 +57,7 @@ def train():
     dataset = TTSDataset(train_data, qwen3tts.processor, config)
     train_dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=dataset.collate_fn)
 
-    # 8-bit Adam + gradient checkpointing for low-VRAM training
-    optimizer = _AdamW(qwen3tts.model.parameters(), lr=args.lr, weight_decay=0.01)
+    optimizer = AdamW(qwen3tts.model.parameters(), lr=args.lr, weight_decay=0.01)
 
     model, optimizer, train_dataloader = accelerator.prepare(
         qwen3tts.model, optimizer, train_dataloader
@@ -97,12 +86,7 @@ def train():
                 input_text_ids = input_ids[:, :, 0]
                 input_codec_ids = input_ids[:, :, 1]
 
-                input_text_embedding = model.talker.model.text_embedding(input_text_ids)
-                # 0.6B has text_projection (2048->1024); apply BEFORE masking so MLP bias
-                # does not corrupt zero-padded non-text positions.
-                if hasattr(model.talker, "text_projection"):
-                    input_text_embedding = model.talker.text_projection(input_text_embedding)
-                input_text_embedding = input_text_embedding * text_embedding_mask
+                input_text_embedding = model.talker.model.text_embedding(input_text_ids) * text_embedding_mask
                 input_codec_embedding = model.talker.model.codec_embedding(input_codec_ids) * codec_embedding_mask
                 input_codec_embedding[:, 6, :] = speaker_embedding
 

@@ -297,8 +297,7 @@ def _configure_logging() -> None:
     root_logger = logging.getLogger()
     if root_logger.handlers:
         return
-    log_path = Path("debug.log")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = Path("/app/debug.log")
     handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
     handler.setFormatter(formatter)

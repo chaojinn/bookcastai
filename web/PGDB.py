@@ -427,6 +427,22 @@ class PGDB:
                 }
             return None
 
+    def delete_book(self, user_id: str, book_id: int) -> Optional[str]:
+        """Delete a book owned by user; returns folder_path if deleted, None if not found/not owned."""
+        if not user_id or not book_id:
+            raise ValueError("user_id and book_id are required")
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM books
+                WHERE id = %s AND user_id = %s
+                RETURNING folder_path;
+                """,
+                (book_id, user_id),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
     def insert_clip(
         self,
         user_id: str,

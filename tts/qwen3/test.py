@@ -1,3 +1,4 @@
+
 """Generate an MP3 from a text file using Qwen3-TTS voice cloning.
 
 Uses the Base model with a reference audio clip (ref.wav) for zero-shot voice
@@ -10,11 +11,13 @@ Examples:
     python tts/qwen3/test.py chapter1.txt --ref tts/qwen3/data/speaker1/train/ref.wav
     python tts/qwen3/test.py chapter1.txt --ref ref.wav --output chapter1.mp3
     python tts/qwen3/test.py chapter1.txt --ref ref.wav --model Qwen/Qwen3-TTS-12Hz-1.7B-Base
+=======
 """
 
 from __future__ import annotations
 
 import argparse
+
 import subprocess
 import sys
 import tempfile
@@ -49,8 +52,10 @@ def wav_to_mp3(wav_path: Path, mp3_path: Path) -> None:
     wav_path.unlink(missing_ok=True)
 
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
+
         description="Zero-shot voice clone TTS using Qwen3-TTS Base model + ref.wav.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -128,6 +133,7 @@ def main() -> None:
     wav_to_mp3(tmp_wav, output)
 
     print(f"\nSaved: {output}")
+
 
 
 if __name__ == "__main__":
