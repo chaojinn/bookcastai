@@ -135,6 +135,8 @@ def _run_finetune(
     batch_size: int,
     epochs: int,
     lr: float,
+    val_split: float,
+    patience: int,
 ):
     """Invoke sft_12hz.py in a subprocess.
 
@@ -162,6 +164,8 @@ def _run_finetune(
         "--lr", str(lr),
         "--num_epochs", str(epochs),
         "--speaker_name", speaker_name,
+        "--val_split", str(val_split),
+        "--patience", str(patience),
     ]
 
     print("CMD:", " ".join(cmd))
@@ -185,10 +189,14 @@ def main():
         help="Training batch size per step. Default 1 for 16 GB VRAM. "
              "Effective batch = batch_size × 4 (gradient accumulation steps hardcoded in sft_12hz.py).",
     )
-    parser.add_argument("--lr", type=float, default=5e-7)
+    parser.add_argument("--lr", type=float, default=2e-7)
+    parser.add_argument("--val_split", type=float, default=0.1,
+                        help="Fraction of data held out for validation (default 0.1).")
+    parser.add_argument("--patience", type=int, default=3,
+                        help="Early stopping patience in epochs (default 3).")
     parser.add_argument(
         "--output_dir", default=None,
-        help="Where to save checkpoints. Defaults to <train_jsonl_parent>/finetune_output/.",
+        help="Where to save checkpoints. Defaults to tts/qwen3/data/<speaker_name>/.",
     )
     parser.add_argument(
         "--model_path", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
@@ -205,7 +213,7 @@ def main():
     if not train_jsonl.exists():
         sys.exit(f"Error: train.jsonl not found: {train_jsonl}")
 
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else train_jsonl.parent / "finetune_output"
+    output_dir = Path(args.output_dir).resolve() if args.output_dir else Path(__file__).parent / "data" / args.speaker_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     codes_jsonl = output_dir / "train_with_codes.jsonl"
@@ -225,13 +233,15 @@ def main():
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,
+        val_split=args.val_split,
+        patience=args.patience,
     )
 
-    last_epoch = args.epochs - 1
-    print(f"\nAll done!  Checkpoints: {output_dir}")
+    print(f"\nAll done!  Checkpoints: {output_dir / 'checkpoint-epoch-*'}")
+    print(f"(See training output above for best checkpoint epoch.)")
     print(f"\nTest inference:")
     print(f"  from qwen_tts import Qwen3TTSModel")
-    print(f"  tts = Qwen3TTSModel.from_pretrained('{output_dir}/checkpoint-epoch-{last_epoch}')")
+    print(f"  tts = Qwen3TTSModel.from_pretrained('{output_dir}/checkpoint-epoch-N')")
     print(f"  wavs, sr = tts.generate_custom_voice(text='...', speaker='{args.speaker_name}')")
 
 
