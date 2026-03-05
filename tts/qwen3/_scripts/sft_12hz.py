@@ -148,6 +148,7 @@ def train():
     qwen3tts = Qwen3TTSModel.from_pretrained(
         MODEL_PATH,
         dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,  # satisfies transformers' FA2 dtype check
         attn_implementation="flash_attention_2",
     )
     config = AutoConfig.from_pretrained(MODEL_PATH)
@@ -171,7 +172,9 @@ def train():
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=train_dataset.collate_fn)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=val_dataset.collate_fn)
 
-    optimizer = AdamW(qwen3tts.model.parameters(), lr=args.lr, weight_decay=0.01)
+    # foreach=False avoids _multi_tensor_adam which batches all parameter updates
+    # into one CUDA kernel and spikes peak VRAM by ~2× the optimizer state size.
+    optimizer = AdamW(qwen3tts.model.parameters(), lr=args.lr, weight_decay=0.01, foreach=False)
 
     model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
         qwen3tts.model, optimizer, train_dataloader, val_dataloader
@@ -183,6 +186,8 @@ def train():
 
     for epoch in range(args.num_epochs):
         # --- train ---
+        gc.collect()
+        torch.cuda.empty_cache()
         model.train()
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(model):

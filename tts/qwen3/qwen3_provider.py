@@ -81,7 +81,7 @@ def _load_model(path_or_id: str, device: str):
     return model
 
 
-def _split_sentences(text: str, max_chars: int = 300) -> list[str]:
+def _split_sentences(text: str, max_chars: int = 512) -> list[str]:
     text = re.sub(r"\s+", " ", text).strip()
     raw = re.split(r"(?<=[.!?…])\s+", text)
     chunks: list[str] = []

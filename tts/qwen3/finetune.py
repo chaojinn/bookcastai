@@ -154,6 +154,10 @@ def _run_finetune(
     env = os.environ.copy()
     extra_path = str(_SCRIPTS_DIR)
     env["PYTHONPATH"] = extra_path + os.pathsep + env.get("PYTHONPATH", "")
+    # Prevent SIGSEGV from CUDA memory fragmentation over long training runs.
+    # expandable_segments lets the allocator grow segments dynamically instead
+    # of requiring a single contiguous block, avoiding fragmentation crashes.
+    env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
     cmd = [
         sys.executable, str(_SCRIPTS_DIR / "sft_12hz.py"),
