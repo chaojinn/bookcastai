@@ -105,11 +105,16 @@ def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAg
     return construct_book_structure
 
 
-def _merge_untitled_chapters(chapters: Sequence[dict[str, object]]) -> List[dict[str, object]]:
-    """Merge chapters with empty titles into the next titled chapter.
+def _merge_untitled_chapters(
+    chapters: Sequence[dict[str, object]],
+    merge_direction: str = "previous",
+) -> List[dict[str, object]]:
+    """Merge chapters with empty titles into an adjacent titled chapter.
 
-    Content from untitled chapters is prepended to the content of the next
-    titled chapter, eliminating standalone untitled entries.
+    When *merge_direction* is ``"previous"`` (default), content from untitled
+    chapters is appended to the preceding titled chapter.  When
+    *merge_direction* is ``"next"``, content is prepended to the following
+    titled chapter instead.
     """
 
     merged: List[dict[str, object]] = []
@@ -124,8 +129,23 @@ def _merge_untitled_chapters(chapters: Sequence[dict[str, object]]) -> List[dict
         normalized_title = title if isinstance(title, str) else ""
 
         if not normalized_title.strip():
-            carry_content = _merge_text_with_space(carry_content, content)
-            carry_from = chapter
+            if merge_direction == "previous" and merged:
+                last_content = merged[-1].get("content_text")
+                src_number = chapter.get("chapter_number") if isinstance(chapter.get("chapter_number"), int) else None
+                tgt_number = merged[-1].get("chapter_number") if isinstance(merged[-1].get("chapter_number"), int) else None
+                logger.debug(
+                    "Merging untitled chapter %s into previous chapter %s: preview='%s'",
+                    src_number,
+                    tgt_number,
+                    (content or "")[:200],
+                )
+                merged[-1]["content_text"] = _merge_text_with_space(
+                    last_content if isinstance(last_content, str) else "",
+                    content,
+                )
+            else:
+                carry_content = _merge_text_with_space(carry_content, content)
+                carry_from = chapter
             continue
 
         merged_content = content
