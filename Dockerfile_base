@@ -27,4 +27,5 @@ RUN pip install --no-cache-dir --break-system-packages setuptools wheel packagin
         torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cu124 \
     && pip install --no-cache-dir --break-system-packages flash-attn --no-build-isolation \
-    && pip install --no-cache-dir --break-system-packages -r requirements.txt
+    && pip install --no-cache-dir --break-system-packages -r requirements.txt 
+RUN python -m spacy download en_core_web_sm --break-system-packages
