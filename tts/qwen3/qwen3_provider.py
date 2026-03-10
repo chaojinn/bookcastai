@@ -208,9 +208,10 @@ class Qwen3TTSProvider(TTSProvider):
     subfolders under tts/qwen3/speakers/.
 
     Supported parameters (via TTSRequest.raw_parameters JSON):
-        speaker   (str)   – voice name; default "Serena"
+        speaker     (str)   – voice name; default "Serena"
         temperature (float) – sampling temperature (if supported by model)
-        format    (str)   – "wav" or "mp3"; default inferred from output_file suffix
+        format      (str)   – "wav" or "mp3"; default inferred from output_file suffix
+        seed        (int)   – random seed for deterministic generation; default 42
     """
 
     def __init__(
@@ -264,6 +265,15 @@ class Qwen3TTSProvider(TTSProvider):
                 gen_kwargs["temperature"] = float(temperature_val)
             except (TypeError, ValueError) as exc:
                 raise TTSProviderError(f"Invalid temperature value: {temperature_val}") from exc
+
+        seed_val = params.get("seed", 42)
+        try:
+            seed = int(seed_val)
+        except (TypeError, ValueError):
+            seed = 42
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
         all_audio: list[np.ndarray] = []
         sample_rate: int | None = None
