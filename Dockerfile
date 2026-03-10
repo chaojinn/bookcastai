@@ -16,7 +16,10 @@ COPY *.py *.md *.txt /app/
 
 # Copy application packages
 COPY agent /app/agent
-COPY tts /app/tts
+RUN mkdir -p /app/tts /app/tts/qwen3/speakers
+COPY tts/*.py /app/tts/
+COPY tts/qwen3/*.py /app/tts/qwen3/
+COPY tts/qwen3/speakers /app/tts/qwen3/speakers
 COPY web /app/web
 
 
