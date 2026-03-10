@@ -25,6 +25,7 @@ def _build_provider(
     lang: str,
     speed: float,
     temperature: float | None = None,
+    quantize: bool = False,
 ) -> dict[str, object]:
     provider_name = provider_name.lower()
     if provider_name == "kokoro":
@@ -63,6 +64,8 @@ def _build_provider(
         p: dict = {"speaker": voice, "format": "mp3"}
         if temperature is not None:
             p["temperature"] = temperature
+        if quantize:
+            p["quantize"] = True
         parameters = json.dumps(p)
     else:
         raise ValueError(f"Unsupported TTS provider: {provider_name}")
@@ -155,6 +158,7 @@ def convert_epub_to_pod(
     executable: str = "kokoro-tts",
     provider_name: str = "kokoro",
     temperature: float | None = None,
+    quantize: bool = False,
     publish_progress: Callable[[int, str], None] | None = None,
 ) -> list[Path]:
     """Convert the selected EPUB chapters into MP3 files and return their paths."""
@@ -174,6 +178,7 @@ def convert_epub_to_pod(
         lang=lang,
         speed=speed,
         temperature=temperature,
+        quantize=quantize,
     )
     output_base = output_dir / "audio" / provider_info["name"]
     output_base.mkdir(parents=True, exist_ok=True)

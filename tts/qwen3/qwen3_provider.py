@@ -58,7 +58,22 @@ def _ensure_pydub():
     return _AUDIO_SEGMENT
 
 
-def _load_model(path_or_id: str, device: str):
+def _patch_deepcopy_for_dict_keys() -> None:
+    """Register a deepcopy handler for dict_keys so bitsandbytes quantization works.
+
+    transformers calls deepcopy(model) inside get_keys_to_not_convert() when
+    preparing 8-bit quantization.  If the model state contains dict_keys values
+    (e.g. tied-weights mappings) the default deepcopy raises
+    ``TypeError: cannot pickle 'dict_keys' object``.
+    Converting dict_keys → list is always correct for a deepcopy.
+    """
+    import copy
+    dict_keys_type = type({}.keys())
+    if dict_keys_type not in copy._deepcopy_dispatch:
+        copy._deepcopy_dispatch[dict_keys_type] = lambda x, memo: list(x)
+
+
+def _load_model(path_or_id: str, device: str, *, quantize: bool = False):
     Qwen3TTSModel = _ensure_qwen3()
     import torch  # type: ignore
 
@@ -68,15 +83,30 @@ def _load_model(path_or_id: str, device: str):
     except ImportError:
         attn_impl = "sdpa"
 
+    kwargs: dict = {
+        "device_map": device,
+        "attn_implementation": attn_impl,
+    }
+    if quantize:
+        try:
+            from transformers import BitsAndBytesConfig  # type: ignore
+            _patch_deepcopy_for_dict_keys()
+            kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+        except ImportError as exc:
+            raise TTSProviderError(
+                "INT8 quantization requires the 'bitsandbytes' package. "
+                "Install it with: pip install bitsandbytes"
+            ) from exc
+    else:
+        kwargs["dtype"] = torch.bfloat16
+
+    precision = "INT8 (8-bit)" if quantize else "bfloat16 (16-bit)"
+    print(f"[Qwen3TTS] Loading model '{path_or_id}' on {device} in {precision}", flush=True)
     try:
-        model = Qwen3TTSModel.from_pretrained(
-            path_or_id,
-            device_map=device,
-            dtype=torch.bfloat16,
-            attn_implementation=attn_impl,
-        )
+        model = Qwen3TTSModel.from_pretrained(path_or_id, **kwargs)
     except Exception as exc:
         raise TTSProviderError(f"Failed to load Qwen3-TTS model from '{path_or_id}': {exc}") from exc
+    print(f"[Qwen3TTS] Model loaded successfully in {precision}", flush=True)
     model.model.eval()
     return model
 
@@ -212,6 +242,7 @@ class Qwen3TTSProvider(TTSProvider):
         temperature (float) – sampling temperature (if supported by model)
         format      (str)   – "wav" or "mp3"; default inferred from output_file suffix
         seed        (int)   – random seed for deterministic generation; default 42
+        quantize    (bool)  – load model in INT8 to halve VRAM; batch_size is doubled automatically; default false
     """
 
     def __init__(
@@ -222,7 +253,7 @@ class Qwen3TTSProvider(TTSProvider):
         self.base_model_id = base_model_id
         self.device = device
         self._base_model = None
-        self._custom_models: Dict[str, object] = {}
+        self._custom_models: Dict[tuple, object] = {}
 
     def get_english_voices(self) -> list[dict[str, str]]:
         voices = [{"name": s, "code": s} for s in INTERNAL_SPEAKERS]
@@ -246,18 +277,19 @@ class Qwen3TTSProvider(TTSProvider):
             supported = ", ".join(sorted(SUPPORTED_FORMATS))
             raise TTSProviderError(f"Unsupported audio format '{fmt}'. Supported formats: {supported}.")
 
+        quantize = bool(params.get("quantize", False))
         is_internal = speaker in INTERNAL_SPEAKERS
-        model = self._get_base_model() if is_internal else self._get_custom_model(speaker)
+        model = self._get_base_model(quantize=quantize) if is_internal else self._get_custom_model(speaker, quantize=quantize)
 
         chunks = _split_sentences(request.text_content)
         if not chunks:
             raise TTSProviderError("No text content to synthesise.")
 
-        batch_size_val = params.get("batch_size", DEFAULT_BATCH_SIZE)
+        batch_size_val = params.get("batch_size", DEFAULT_BATCH_SIZE * 2 if quantize else DEFAULT_BATCH_SIZE)
         try:
             batch_size = max(1, int(batch_size_val))
         except (TypeError, ValueError):
-            batch_size = DEFAULT_BATCH_SIZE
+            batch_size = DEFAULT_BATCH_SIZE * 2 if quantize else DEFAULT_BATCH_SIZE
 
         gen_kwargs: dict = {"speaker": speaker}
         if temperature_val is not None:
@@ -308,14 +340,17 @@ class Qwen3TTSProvider(TTSProvider):
 
         return request.output_file
 
-    def _get_base_model(self):
-        if self._base_model is None:
-            logger.info("Loading Qwen3-TTS base model from %s", self.base_model_id)
-            self._base_model = _load_model(self.base_model_id, self.device)
+    def _get_base_model(self, *, quantize: bool = False):
+        key = ("base", quantize)
+        if self._base_model is None or getattr(self, "_base_model_quantize", None) != quantize:
+            logger.info("Loading Qwen3-TTS base model from %s (quantize=%s)", self.base_model_id, quantize)
+            self._base_model = _load_model(self.base_model_id, self.device, quantize=quantize)
+            self._base_model_quantize = quantize
         return self._base_model
 
-    def _get_custom_model(self, speaker: str):
-        if speaker not in self._custom_models:
+    def _get_custom_model(self, speaker: str, *, quantize: bool = False):
+        cache_key = (speaker, quantize)
+        if cache_key not in self._custom_models:
             speaker_path = SPEAKERS_DIR / speaker
             if not speaker_path.exists():
                 available = [d.name for d in SPEAKERS_DIR.iterdir() if d.is_dir()] if SPEAKERS_DIR.exists() else []
@@ -323,6 +358,6 @@ class Qwen3TTSProvider(TTSProvider):
                     f"Custom speaker '{speaker}' not found in {SPEAKERS_DIR}. "
                     f"Available: {available or 'none'}."
                 )
-            logger.info("Loading Qwen3-TTS custom model for speaker '%s'", speaker)
-            self._custom_models[speaker] = _load_model(str(speaker_path), self.device)
-        return self._custom_models[speaker]
+            logger.info("Loading Qwen3-TTS custom model for speaker '%s' (quantize=%s)", speaker, quantize)
+            self._custom_models[cache_key] = _load_model(str(speaker_path), self.device, quantize=quantize)
+        return self._custom_models[cache_key]

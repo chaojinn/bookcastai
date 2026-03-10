@@ -409,6 +409,8 @@ async def _handle_tts(job: Job) -> None:
         except (TypeError, ValueError):
             pass  # ignore invalid value; provider will use its default
 
+    quantize = _to_bool(params.get("quantize"))
+
     base_dir = os.getenv("PODS_BASE")
     if not base_dir:
         job.status = "fail"
@@ -462,6 +464,7 @@ async def _handle_tts(job: Job) -> None:
             overwrite=overwrite,
             provider_name=provider_name,
             temperature=temperature,
+            quantize=quantize,
             publish_progress=publish_progress,
         )
     except Exception as exc:

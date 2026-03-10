@@ -82,10 +82,14 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
             value="0.8"
           >
         </div>
-        <div class="col-12 col-md-6 d-flex align-items-end">
+        <div class="col-12 col-md-6 d-flex align-items-end gap-4">
           <div class="form-check">
             <input class="form-check-input" type="checkbox" id="overwrite-check">
             <label class="form-check-label" for="overwrite-check">Overwrite existing audio</label>
+          </div>
+          <div class="form-check d-none" id="quantize-group">
+            <input class="form-check-input" type="checkbox" id="quantize-check">
+            <label class="form-check-label" for="quantize-check">INT8 quantization (faster, less VRAM)</label>
           </div>
         </div>
       </div>
@@ -115,6 +119,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       const temperatureRange = $('#temperature-range');
       const temperatureValue = $('#temperature-value');
       const overwriteCheck = $('#overwrite-check');
+      const quantizeCheck = $('#quantize-check');
       const startBtn = $('#start-btn');
       const publishBtn = $('#publish-btn');
       const statusBar = $('#status-bar');
@@ -188,6 +193,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         speedRange.prop('disabled', !pageReady || jobRunning);
         temperatureRange.prop('disabled', !pageReady || jobRunning);
         overwriteCheck.prop('disabled', !pageReady || jobRunning);
+        quantizeCheck.prop('disabled', !pageReady || jobRunning);
       }
 
       function populateModels() {
@@ -206,6 +212,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         const isQwen3 = model === 'qwen3-tts';
         $('#speed-group').toggleClass('d-none', isQwen3);
         $('#temperature-group').toggleClass('d-none', !isQwen3);
+        $('#quantize-group').toggleClass('d-none', !isQwen3);
         $('label[for="voice-select"]').text(isQwen3 ? 'Speaker' : 'Voice');
       }
 
@@ -361,6 +368,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         const voiceCode = voiceSelect.val();
         const speed = Number(speedRange.val());
         const overwrite = overwriteCheck.is(':checked');
+        const quantize = quantizeCheck.is(':checked');
 
         jobRunning = true;
         updateControlState();
@@ -379,7 +387,8 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
                 { key: 'voice', value: voiceCode },
                 { key: 'speed', value: speed },
                 { key: 'temperature', value: temperature },
-                { key: 'overwrite', value: overwrite }
+                { key: 'overwrite', value: overwrite },
+                { key: 'quantize', value: quantize }
               ]
             })
           });
