@@ -15,8 +15,8 @@ __all__ = [
 from .fetch_table_of_contents import make_fetch_table_of_contents_node
 from .fetch_chapter_content import make_fetch_chapter_content_node
 from .fetch_metadata import make_fetch_metadata_node
-from .normalize_titles_node_old import make_normalize_titles_node
-from .normalize_first_sentence_node_old import make_normalize_first_sentence_node
-from .construct_book_structure_old import make_construct_book_structure_node
+from .normalize_titles import make_normalize_titles_node
+from .normalize_first_sentence import make_normalize_first_sentence_node
+from .construct_book_structure import make_construct_book_structure_node
 from .assemble_payload import make_assemble_payload_node
 from .text_processing import EPUBTextProcessor
