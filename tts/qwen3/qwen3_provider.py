@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Dict
 if TYPE_CHECKING:
     import numpy as np
 
-from agent.chunkrizer import chunk_text
 from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
 INTERNAL_SPEAKERS = ("Serena", "Vivian", "Aiden", "Ryan")
@@ -248,6 +247,7 @@ class Qwen3TTSProvider(TTSProvider):
         is_internal = speaker in INTERNAL_SPEAKERS
         model = self._get_base_model(quantize=quantize) if is_internal else self._get_custom_model(speaker, quantize=quantize)
 
+        from agent.chunkrizer import chunk_text  # lazy import to avoid module-level side effects
         chunks = chunk_text(request.text_content, 500)
         if not chunks:
             raise TTSProviderError("No text content to synthesise.")

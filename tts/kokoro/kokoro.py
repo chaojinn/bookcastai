@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     import numpy as np
     from kokoro import KPipeline
 
-from agent.chunkrizer import chunk_text
 from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
 DEFAULT_VOICE = "af_bella"
@@ -181,6 +180,7 @@ class KokoroTTSProvider(TTSProvider):
         pipeline_kwargs = {"voice": voice, "speed": speed_value, "split_pattern": split_pattern}
         logger.info("Kokoro split_pattern in use: %s", split_pattern)
 
+        from agent.chunkrizer import chunk_text  # lazy import to avoid module-level side effects
         text_chunks = chunk_text(request.text_content, 2000)
         if not text_chunks:
             raise TTSProviderError("No text content to synthesise.")
