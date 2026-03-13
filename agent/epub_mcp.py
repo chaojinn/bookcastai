@@ -1,3 +1,13 @@
+# This module provides an EbookLib-backed client for reading EPUB files through
+# a small MCP-friendly surface area.
+# It loads and caches EPUB books, builds table-of-contents views from NCX or OPF
+# data, extracts chapter HTML for a requested href/anchor, and returns selected
+# metadata plus cover image data when available.
+# External callers are expected to use `EbooklibEPUBMCPClient` and its public
+# methods: `get_table_of_contents()`, `get_chapter_content()`, and
+# `get_metadata()`. The remaining module-level helpers are internal support
+# functions for parsing, normalization, caching, and EPUB asset lookup.
+
 from __future__ import annotations
 
 import base64
@@ -404,6 +414,18 @@ class EbooklibEPUBMCPClient:
         epub_path: str,
         source: str,
     ) -> Optional[Dict[str, Any]]:
+        """
+        Load an EPUB and return its table of contents.
+
+        Args:
+            epub_path: Filesystem path to the `.epub` file to inspect.
+            source: Preferred TOC source, typically `opf` or `ncx`.
+
+        Returns:
+            A dictionary with `source` and `chapters` keys when extraction
+            succeeds, or `None` if the EPUB cannot be loaded. `chapters`
+            contains TOC entries with `title`, `href`, and optional `anchor`.
+        """
         try:
             cached = self._resolve_cache(epub_path)
         except FileNotFoundError:
@@ -468,6 +490,19 @@ class EbooklibEPUBMCPClient:
         epub_path: str,
         href: str,
     ) -> Optional[Dict[str, Any]]:
+        """
+        Load chapter content for a specific manifest href or href fragment.
+
+        Args:
+            epub_path: Filesystem path to the `.epub` file to inspect.
+            href: Document href from the manifest or TOC, optionally including
+                an anchor fragment such as `chapter.xhtml#section-2`.
+
+        Returns:
+            A dictionary containing `content_text` with the extracted raw HTML
+            for the requested chapter or anchored section, or `None` if the
+            EPUB or target href cannot be resolved.
+        """
         try:
             cached = self._resolve_cache(epub_path)
         except FileNotFoundError:
@@ -493,6 +528,17 @@ class EbooklibEPUBMCPClient:
         return {"content_text": text}
 
     def get_metadata(self, epub_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Load normalized EPUB metadata and cover image information.
+
+        Args:
+            epub_path: Filesystem path to the `.epub` file to inspect.
+
+        Returns:
+            A dictionary with `metadata`, `cover_image`, and
+            `cover_image_media_type` keys, or `None` if the EPUB cannot be
+            loaded. `cover_image` is base64-encoded when a cover is found.
+        """
         try:
             cached = self._resolve_cache(epub_path)
         except FileNotFoundError:
@@ -516,6 +562,7 @@ class EbooklibEPUBMCPClient:
             "metadata": cached.metadata,
             "cover_image": cached.cover_image,
             "cover_image_media_type": cached.cover_image_media_type,
+            "epub_version": cached.book.version,
         }
 
 

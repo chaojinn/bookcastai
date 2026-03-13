@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import subprocess
 import tempfile
 from io import BytesIO
@@ -11,6 +10,7 @@ from typing import TYPE_CHECKING, Dict
 if TYPE_CHECKING:
     import numpy as np
 
+from agent.chunkrizer import chunk_text
 from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
 INTERNAL_SPEAKERS = ("Serena", "Vivian", "Aiden", "Ryan")
@@ -110,39 +110,6 @@ def _load_model(path_or_id: str, device: str, *, quantize: bool = False):
     model.model.eval()
     return model
 
-
-def _split_sentences(text: str, max_chars: int = 512) -> list[str]:
-    text = re.sub(r"\s+", " ", text).strip()
-    raw = re.split(r"(?<=[.!?…])\s+", text)
-    chunks: list[str] = []
-    current = ""
-    for sent in raw:
-        sent = sent.strip()
-        if not sent:
-            continue
-        if len(current) + len(sent) + 1 <= max_chars:
-            current = (current + " " + sent).strip()
-        else:
-            if current:
-                chunks.append(current)
-            current = ""
-            if len(sent) > max_chars:
-                parts = re.split(r"(?<=,)\s+", sent)
-                sub = ""
-                for part in parts:
-                    if len(sub) + len(part) + 1 <= max_chars:
-                        sub = (sub + " " + part).strip()
-                    else:
-                        if sub:
-                            chunks.append(sub)
-                        sub = part
-                if sub:
-                    chunks.append(sub)
-            else:
-                current = sent
-    if current:
-        chunks.append(current)
-    return [c for c in chunks if c.strip()]
 
 
 def _wav_to_numpy(w) -> "np.ndarray":
@@ -281,7 +248,7 @@ class Qwen3TTSProvider(TTSProvider):
         is_internal = speaker in INTERNAL_SPEAKERS
         model = self._get_base_model(quantize=quantize) if is_internal else self._get_custom_model(speaker, quantize=quantize)
 
-        chunks = _split_sentences(request.text_content)
+        chunks = chunk_text(request.text_content, 500)
         if not chunks:
             raise TTSProviderError("No text content to synthesise.")
 

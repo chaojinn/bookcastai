@@ -117,8 +117,7 @@ def convert_roman_numerals(text: str) -> Dict[str, Any]:
     if not isinstance(text, str) or not text:
         return {"changed_text": "" if text is None else text, "changes": []}
 
-    # Local import to avoid circular dependency when chunk_chapter_content imports this module.
-    from .chunk_chapter_content import split_sentences
+    from ..chunkrizer import split_sentences
 
     sentences = split_sentences(text, strip_parentheticals=False)
     if not sentences:

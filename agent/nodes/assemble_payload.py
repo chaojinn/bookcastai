@@ -12,7 +12,8 @@ def make_assemble_payload_node() -> Callable[["EPUBAgentState"], "EPUBAgentState
         chapters = state.get("chapters", [])
         if isinstance(chapters, list) and chapters:
             payload["chapters"] = [
-                dict(chapter) for chapter in chapters if isinstance(chapter, dict)
+                {k: v for k, v in chapter.items() if k != "href"}
+                for chapter in chapters if isinstance(chapter, dict)
             ]
         cover_image = state.get("cover_image")
         if cover_image:

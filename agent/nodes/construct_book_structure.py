@@ -1,27 +1,13 @@
-"""
-Node: construct_book_structure
-Input state (EPUBAgentState keys used):
-  - chapters: list[dict] with chapter_number (int), chapter_title (str), content_text (str)
-  - preview_path: optional path (str/Path-like) where a preview JSON should be written
-  - errors: optional list[str] to append to when preview write fails
-Process:
-  - If preview_path is provided, write a preview JSON of chapter metadata (first 200 chars/length).
-  - Query OpenRouter (with caching) to decide which chapter numbers to keep; renumber kept chapters.
-  - Merge untitled chapters into the next titled one, renumber sequentially.
-  - If OpenRouter fails or returns nothing usable, fall back to the merged chapter list.
-Output state:
-  - chapters: merged (and possibly filtered) list with sequential chapter_number
-  - errors: appended with preview write errors, if any
-"""
-
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import os
+import re
+from html.parser import HTMLParser
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -32,173 +18,183 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
 logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "openai/gpt-5.2"
+#_MODEL_NAME = "qwen/qwen3-coder"
 
-def make_construct_book_structure_node() -> Callable[["EPUBAgentState"], "EPUBAgentState"]:
-    def construct_book_structure(state: "EPUBAgentState") -> "EPUBAgentState":
-        original_chapters = state.get("chapters", [])
-        preview_path_value = state.get("preview_path")
-        if not preview_path_value:
-            merged = _merge_untitled_chapters(original_chapters)
-            logger.debug("total merged chapters: %s", len(merged))
-            return {"chapters": merged}
-        preview_items: List[dict[str, str | int]] = []
-        for chapter in original_chapters:
+_BLOCK_LEVEL_TAGS = {
+    "article", "aside", "blockquote", "br", "div", "footer",
+    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr",
+    "li", "main", "nav", "p", "pre", "section", "ul", "ol",
+}
+
+
+class _ContentStripper(HTMLParser):
+    """Strip HTML tags from content."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: List[str] = []
+
+    def clean(self, html_text: str) -> str:
+        if not isinstance(html_text, str):
+            return ""
+        self.reset()
+        self._parts.clear()
+        self.feed(html_text)
+        self.close()
+        text = "".join(self._parts).strip()
+        text = text.replace("\n", " ")
+        cleaned = " ".join(text.split())
+        cleaned = re.sub(r"\([^)]*\)", "", cleaned)
+        cleaned = " ".join(cleaned.split())
+        return cleaned
+
+    def handle_starttag(self, tag: str, attrs: object) -> None:
+        if tag.lower() in _BLOCK_LEVEL_TAGS:
+            self._append_separator()
+
+    def handle_startendtag(self, tag: str, attrs: object) -> None:
+        if tag.lower() in _BLOCK_LEVEL_TAGS:
+            self._append_separator()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in _BLOCK_LEVEL_TAGS:
+            self._append_separator()
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self._parts.append(data)
+
+    def _append_separator(self) -> None:
+        if not self._parts:
+            return
+        last = self._parts[-1]
+        if not last:
+            return
+        last_non_space = None
+        for ch in reversed(last):
+            if not ch.isspace():
+                last_non_space = ch
+                break
+        if last_non_space is None:
+            return
+        if last_non_space not in {".", "?", "!", ":", ";", ","}:
+            self._parts[-1] = last.rstrip() + "."
+        self._parts.append(" ")
+
+
+def make_construct_book_structure_node(
+    cache_path: Optional[Path] = None,
+) -> Callable[["EPUBAgentState"], "EPUBAgentState"]:
+    stripper = _ContentStripper()
+
+    def construct_book_structure_new(state: "EPUBAgentState") -> "EPUBAgentState":
+        raw_chapters = state.get("chapters", [])
+        errors: List[str] = list(state.get("errors", []))
+
+        # Strip HTML from each chapter
+        stripped_chapters = []
+        for chapter in raw_chapters:
             if not isinstance(chapter, dict):
                 continue
-            chapter_number = chapter.get("chapter_number") if isinstance(chapter.get("chapter_number"), int) else None
-            title = chapter.get("chapter_title") if isinstance(chapter.get("chapter_title"), str) else ""
-            content_text = chapter.get("content_text") if isinstance(chapter.get("content_text"), str) else ""
-            trimmed_content = content_text.strip()
+            stripped = dict(chapter)
+            stripped["content_text"] = stripper.clean(chapter.get("content_text", ""))
+            stripped_chapters.append(stripped)
+
+        # Merge short chapters (< 100 chars) into the next chapter
+        stripped_chapters = _merge_short_chapters(stripped_chapters)
+
+        # Build preview items for LLM
+        preview_items: List[dict[str, Any]] = []
+        for chapter in stripped_chapters:
+            chapter_number = chapter.get("chapter_number")
+            title = chapter.get("chapter_title", "") if isinstance(chapter.get("chapter_title"), str) else ""
+            content_text = chapter.get("content_text", "") if isinstance(chapter.get("content_text"), str) else ""
+            trimmed = content_text.strip()
             preview_items.append(
                 {
                     "chapter_number": chapter_number,
                     "chapter_title": title,
-                    "first_200_characters_of_content": trimmed_content[:200],
-                    "content_length": len(trimmed_content),
-                },
+                    "first_200_characters_of_content": trimmed[:200],
+                    "content_length": len(trimmed),
+                }
             )
-        preview_path = Path(preview_path_value).expanduser()
-        try:
-            preview_path.parent.mkdir(parents=True, exist_ok=True)
-            with preview_path.open("w", encoding="utf-8") as handle:
-                json.dump(preview_items, handle, ensure_ascii=False, indent=2)
-        except OSError as exc:
-            errors = list(state.get("errors", []))
-            errors.append(f"Failed to write preview JSON: {exc}")
-            merged = _merge_untitled_chapters(original_chapters)
-            logger.debug("total merged chapters: %s", len(merged))
-            return {"chapters": merged, "errors": errors}
 
-        cache_path = preview_path.parent / "openroute_cache.json"
         selected_numbers = _query_openroute_for_chapters(preview_items, cache_path=cache_path)
         if selected_numbers:
-            filtered_chapters = [
+            filtered = [
                 chapter
-                for chapter in original_chapters
-                if isinstance(chapter, dict)
-                and isinstance(chapter.get("chapter_number"), int)
+                for chapter in stripped_chapters
+                if isinstance(chapter.get("chapter_number"), int)
                 and chapter["chapter_number"] in selected_numbers
             ]
-            if filtered_chapters:
-                for index, chapter in enumerate(filtered_chapters, start=1):
+            if filtered:
+                for index, chapter in enumerate(filtered, start=1):
                     chapter["chapter_number"] = index
-                merged = _merge_untitled_chapters(filtered_chapters)
-                logger.debug("total merged chapters: %s", len(merged))
-                for chapter in merged:
-                    if not isinstance(chapter, dict):
-                        continue
-                    title = chapter.get("chapter_title") if isinstance(chapter.get("chapter_title"), str) else ""
-                    content = chapter.get("content_text") if isinstance(chapter.get("content_text"), str) else ""
+                for chapter in filtered:
+                    title = chapter.get("chapter_title", "")
+                    content = chapter.get("content_text", "")
                     logger.info(
                         "Chapter %s: '%s' (length=%s)",
                         chapter.get("chapter_number"),
                         title,
                         len(content),
                     )
-                
-                return {"chapters": merged}
+                return {"chapters": filtered, "errors": errors}
             logger.warning("OpenRoute selection returned numbers not matching any chapter.")
-        merged = _merge_untitled_chapters(original_chapters)
-        logger.debug("total merged chapters: %s", len(merged))
-        return {"chapters": merged}
 
-    return construct_book_structure
+        return {"chapters": stripped_chapters, "errors": errors}
+
+    return construct_book_structure_new
 
 
-def _merge_untitled_chapters(
-    chapters: Sequence[dict[str, object]],
-    merge_direction: str = "previous",
-) -> List[dict[str, object]]:
-    """Merge chapters with empty titles into an adjacent titled chapter.
-
-    When *merge_direction* is ``"previous"`` (default), content from untitled
-    chapters is appended to the preceding titled chapter.  When
-    *merge_direction* is ``"next"``, content is prepended to the following
-    titled chapter instead.
-    """
-
-    merged: List[dict[str, object]] = []
+def _merge_short_chapters(chapters: List[dict[str, Any]]) -> List[dict[str, Any]]:
+    """Merge any chapter with < 100 chars of content into the next chapter,
+    using the next chapter's title. Renumbers sequentially after merging."""
+    merged: List[dict[str, Any]] = []
     carry_content = ""
-    carry_from: dict[str, object] | None = None
+    carry_href = ""
+
     for chapter in chapters:
-        if not isinstance(chapter, dict):
-            continue
-
-        title = chapter.get("chapter_title")
-        content = chapter.get("content_text") if isinstance(chapter.get("content_text"), str) else ""
-        normalized_title = title if isinstance(title, str) else ""
-
-        if not normalized_title.strip():
-            if merge_direction == "previous" and merged:
-                last_content = merged[-1].get("content_text")
-                src_number = chapter.get("chapter_number") if isinstance(chapter.get("chapter_number"), int) else None
-                tgt_number = merged[-1].get("chapter_number") if isinstance(merged[-1].get("chapter_number"), int) else None
-                logger.debug(
-                    "Merging untitled chapter %s into previous chapter %s: preview='%s'",
-                    src_number,
-                    tgt_number,
-                    (content or "")[:200],
-                )
-                merged[-1]["content_text"] = _merge_text_with_space(
-                    last_content if isinstance(last_content, str) else "",
-                    content,
-                )
-            else:
-                carry_content = _merge_text_with_space(carry_content, content)
-                carry_from = chapter
-            continue
-
-        merged_content = content
-        if carry_content:
-            merged_content = _merge_text_with_space(carry_content, merged_content)
-            src_number = carry_from.get("chapter_number") if isinstance(carry_from, dict) else None
-            src_preview = (carry_content or "")[:200]
-            tgt_number = chapter.get("chapter_number") if isinstance(chapter.get("chapter_number"), int) else None
+        content = chapter.get("content_text", "") if isinstance(chapter.get("content_text"), str) else ""
+        if len(content.strip()) < 100:
+            carry_content = (carry_content + " " + content).strip() if carry_content else content
+            if not carry_href:
+                carry_href = chapter.get("href", "")
             logger.debug(
-                "Merging untitled chapter %s into chapter %s: preview='%s'",
-                src_number,
-                tgt_number,
-                src_preview,
+                "Merging short chapter %s ('%s', len=%s) into next chapter.",
+                chapter.get("chapter_number"),
+                chapter.get("chapter_title", ""),
+                len(content.strip()),
             )
-            carry_content = ""
-            carry_from = None
+            continue
 
+        # This chapter absorbs any carried content; it keeps its own title
+        combined = (carry_content + " " + content).strip() if carry_content else content
         new_chapter = dict(chapter)
-        new_chapter["chapter_title"] = normalized_title
-        new_chapter["content_text"] = merged_content
+        new_chapter["content_text"] = combined
+        if carry_href and not new_chapter.get("href"):
+            new_chapter["href"] = carry_href
         merged.append(new_chapter)
+        carry_content = ""
+        carry_href = ""
 
-    if carry_content:
-        if merged:
-            last_content = merged[-1].get("content_text")
-            merged[-1]["content_text"] = _merge_text_with_space(
-                carry_content,
-                last_content if isinstance(last_content, str) else "",
-            )
-        else:
-            merged.append({"chapter_number": 1, "chapter_title": "", "content_text": carry_content})
+    # If trailing carry remains, append to last chapter
+    if carry_content and merged:
+        last = merged[-1]
+        last_content = last.get("content_text", "") if isinstance(last.get("content_text"), str) else ""
+        last["content_text"] = (last_content + " " + carry_content).strip()
 
-    for index, chapter in enumerate(merged, start=1):
-        chapter["chapter_number"] = index
+    # Renumber sequentially
+    for idx, chapter in enumerate(merged, start=1):
+        chapter["chapter_number"] = idx
 
     return merged
 
 
-def _merge_text_with_space(prefix: str, suffix: str) -> str:
-    """Join two text segments ensuring a separating space when both exist."""
-    if not prefix:
-        return suffix or ""
-    if not suffix:
-        return prefix
-    if prefix[-1].isspace() or suffix[0].isspace():
-        return prefix + suffix
-    return f"{prefix} {suffix}"
-
-
 def _query_openroute_for_chapters(
-    preview_items: Sequence[dict[str, object]],
+    preview_items: Sequence[dict[str, Any]],
     *,
-    cache_path: Path,
+    cache_path: Optional[Path],
 ) -> List[int]:
     if not preview_items:
         return []
@@ -212,7 +208,7 @@ def _query_openroute_for_chapters(
         "return must be a valid json array with nothing else"
     )
 
-    logger.info("OpenRoute chapter selection input: %s", preview_items)
+    logger.debug("OpenRoute chapter selection input: %s", preview_items)
 
     messages = [
         {
@@ -222,10 +218,7 @@ def _query_openroute_for_chapters(
         {
             "role": "user",
             "content": json.dumps(
-                {
-                    "instructions": instructions,
-                    "chapters": preview_items,
-                },
+                {"instructions": instructions, "chapters": preview_items},
                 ensure_ascii=False,
             ),
         },
@@ -236,12 +229,19 @@ def _query_openroute_for_chapters(
         "temperature": 0,
         "messages": messages,
     }
-    cached_content = _get_cached_openroute_response(request_payload, cache_path=cache_path)
-    if cached_content is not None:
-        logger.info("OpenRoute chapter selection cache hit.")
-        content = cached_content
+
+    if cache_path is not None:
+        cached_content = _get_cached_openroute_response(request_payload, cache_path=cache_path)
+        if cached_content is not None:
+            logger.info("OpenRoute chapter selection cache hit.")
+            content = cached_content
+        else:
+            content = None
     else:
-        logger.info("OpenRoute chapter selection request (no cache): %s", request_payload)
+        content = None
+
+    if content is None:
+        logger.debug("OpenRoute chapter selection request (no cache): %s", request_payload)
         load_dotenv()
         api_key = os.getenv("OPENROUTE_API_KEY")
         if not api_key:
@@ -260,7 +260,8 @@ def _query_openroute_for_chapters(
             logger.error("OpenRoute chapter selection returned empty content.")
             return []
 
-        _store_openroute_response(request_payload, content, cache_path=cache_path)
+        if cache_path is not None:
+            _store_openroute_response(request_payload, content, cache_path=cache_path)
 
     try:
         raw_numbers = json.loads(content)
@@ -285,9 +286,10 @@ def _query_openroute_for_chapters(
                 continue
             seen.add(number)
             cleaned.append(number)
+
     if not cleaned:
         logger.warning("OpenRoute selection response did not contain usable chapter numbers.")
-    logger.info("OpenRoute chapter selection result: %s", cleaned)
+    logger.debug("OpenRoute chapter selection result: %s", cleaned)
     return cleaned
 
 

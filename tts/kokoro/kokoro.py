@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     import numpy as np
     from kokoro import KPipeline
 
+from agent.chunkrizer import chunk_text
 from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
 DEFAULT_VOICE = "af_bella"
@@ -180,20 +181,21 @@ class KokoroTTSProvider(TTSProvider):
         pipeline_kwargs = {"voice": voice, "speed": speed_value, "split_pattern": split_pattern}
         logger.info("Kokoro split_pattern in use: %s", split_pattern)
 
-        try:
-            generator = pipeline(
-                request.text_content,
-                **pipeline_kwargs,
-            )
-        except Exception as exc:  # pragma: no cover - kokoro raises rich torch errors
-            raise TTSProviderError(f"Kokoro synthesis failed to start: {exc}") from exc
+        text_chunks = chunk_text(request.text_content, 2000)
+        if not text_chunks:
+            raise TTSProviderError("No text content to synthesise.")
 
         wave_chunks = []
-        for result in generator:
-            audio = getattr(result, "audio", None)
-            if audio is None:
-                continue
-            wave_chunks.append(audio.detach().cpu().numpy().astype(np.float32, copy=False))
+        for text_chunk in text_chunks:
+            try:
+                generator = pipeline(text_chunk, **pipeline_kwargs)
+            except Exception as exc:  # pragma: no cover - kokoro raises rich torch errors
+                raise TTSProviderError(f"Kokoro synthesis failed to start: {exc}") from exc
+            for result in generator:
+                audio = getattr(result, "audio", None)
+                if audio is None:
+                    continue
+                wave_chunks.append(audio.detach().cpu().numpy().astype(np.float32, copy=False))
 
         if not wave_chunks:
             raise TTSProviderError("Kokoro generated no audio output for the supplied text.")
