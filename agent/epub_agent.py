@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 try:
     from langgraph.graph import END, StateGraph
@@ -72,24 +72,40 @@ def _build_graph(
     cache_path: Optional[Path] = None,
     debug_output_path: Optional[Path] = None,
     first_sentence_debug_path: Optional[Path] = None,
+    publish_progress: Optional[Callable[[int, str], None]] = None,
 ) -> Any:
-    graph = StateGraph(EPUBAgentState)
+    node_sequence = [
+        ("fetch_metadata", make_fetch_metadata_node(mcp_client), "Fetched metadata"),
+        ("fetch_table_of_contents", make_fetch_table_of_contents_node(mcp_client), "Fetched table of contents"),
+        ("fetch_chapter_content_raw", make_fetch_chapter_content_raw_node(mcp_client), "Fetched chapter content"),
+        ("construct_book_structure", make_construct_book_structure_node(cache_path=cache_path), "Constructed book structure"),
+        ("normalize_titles", make_normalize_titles_node(cache_path=cache_path), "Normalized titles"),
+        ("extract_text", make_extract_text_node(mcp_client, cache_path=cache_path, debug_output_path=debug_output_path), "Extracted text"),
+        ("normalize_first_sentence", make_normalize_first_sentence_node(cache_path=cache_path, debug_output_path=first_sentence_debug_path), "Normalized first sentences"),
+        ("assemble_payload", make_assemble_payload_node(), "Assembled payload"),
+    ]
+    total_nodes = len(node_sequence)
 
-    graph.add_node("fetch_metadata", make_fetch_metadata_node(mcp_client))
-    graph.add_node("fetch_table_of_contents", make_fetch_table_of_contents_node(mcp_client))
-    graph.add_node("fetch_chapter_content_raw", make_fetch_chapter_content_raw_node(mcp_client))
-    graph.add_node("construct_book_structure", make_construct_book_structure_node(cache_path=cache_path))
-    graph.add_node("normalize_titles", make_normalize_titles_node(cache_path=cache_path))
-    graph.add_node("extract_text", make_extract_text_node(
-        mcp_client,
-        cache_path=cache_path,
-        debug_output_path=debug_output_path,
-    ))
-    graph.add_node("normalize_first_sentence", make_normalize_first_sentence_node(
-        cache_path=cache_path,
-        debug_output_path=first_sentence_debug_path,
-    ))
-    graph.add_node("assemble_payload", make_assemble_payload_node())
+    def _wrap_node(
+        name: str,
+        node_fn: Callable[[EPUBAgentState], EPUBAgentState],
+        index: int,
+        message: str,
+    ) -> Callable[[EPUBAgentState], EPUBAgentState]:
+        def _wrapped(state: EPUBAgentState) -> EPUBAgentState:
+            result = node_fn(state)
+            if publish_progress is not None:
+                try:
+                    progress = int(round(((index + 1) / total_nodes) * 100))
+                    publish_progress(progress, message)
+                except Exception:
+                    logger.exception("Progress callback failed for node %s", name)
+            return result
+        return _wrapped
+
+    graph = StateGraph(EPUBAgentState)
+    for idx, (node_name, node_fn, message) in enumerate(node_sequence):
+        graph.add_node(node_name, _wrap_node(node_name, node_fn, idx, message))
 
     graph.add_edge("__start__", "fetch_metadata")
     graph.add_edge("fetch_metadata", "fetch_table_of_contents")
@@ -139,6 +155,7 @@ class EPUBAgent:
         options: Optional[Dict[str, str]] = None,
         debug_mode: bool = True,
         debug_path: Optional[str] = None,
+        publish_progress: Optional[Callable[[int, str], None]] = None,
     ) -> Dict[str, Any]:
         """
         Run the raw EPUB extraction pipeline.
@@ -176,6 +193,7 @@ class EPUBAgent:
             cache_path=cache_path,
             debug_output_path=debug_output_path,
             first_sentence_debug_path=first_sentence_debug_path,
+            publish_progress=publish_progress,
         )
         initial_state: EPUBAgentState = {"epub_path": epub_path_str}
 

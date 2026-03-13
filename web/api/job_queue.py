@@ -311,42 +311,40 @@ async def _handle_parse_epub(job: Job) -> None:
         _set_progress(job, 100, "Book not found.")
         return
 
-    chunk_size_raw = params.get("chunk_size")
-    chunk_size = None
-    if chunk_size_raw is not None:
-        try:
-            chunk_size = max(1, int(chunk_size_raw))
-        except (TypeError, ValueError):
-            job.status = "fail"
-            job.finished_at = _utc_now()
-            _set_progress(job, 100, "Invalid chunk_size parameter.")
-            return
+    pods_base = os.getenv("PODS_BASE", "")
+    if not pods_base:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "PODS_BASE is not configured.")
+        return
 
-    ignore_classes = _normalize_ignore_classes(params.get("ignore_classes"))
-    ai_extract_text = _to_bool(params.get("ai_extract_text"))
-
-    def publish_progress(progress: int, message: str | None = None) -> None:
-        _set_progress(job, progress, message or "")
+    epub_dir = Path(pods_base).expanduser() / folder_path
+    epub_path = epub_dir / "book.epub"
+    if not epub_path.exists():
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "EPUB file not found.")
+        return
 
     try:
-        from agent.epub_agent import run_epub_agent
+        from agent.epub_agent import EPUBAgent
     except ImportError as exc:
         job.status = "fail"
         job.finished_at = _utc_now()
         _set_progress(job, 100, f"EPUB parser unavailable: {exc}")
         return
 
+    def publish_progress(progress: int, message: str | None = None) -> None:
+        _set_progress(job, progress, message or "")
+
     try:
-        kwargs: Dict[str, Any] = {"ai_extract_text": ai_extract_text}
-        if chunk_size is not None:
-            kwargs["chunk_size"] = chunk_size
-        if ignore_classes is not None:
-            kwargs["ignore_classes"] = ignore_classes
+        agent = EPUBAgent()
         await asyncio.to_thread(
-            run_epub_agent,
-            folder_path,  # Use resolved folder path (user_id/book_title or legacy)
+            agent.run_epub_agent,
+            str(epub_path),
+            debug_mode=True,
+            debug_path=str(epub_dir),
             publish_progress=publish_progress,
-            **kwargs,
         )
     except Exception as exc:
         logger.exception("parse_epub job failed for %s", job.id)
