@@ -7,22 +7,14 @@ import os
 import re
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
-try:  # pragma: no cover - import shim for script execution
-    from ..epub_mcp import EbooklibEPUBMCPClient
-except ImportError:  # pragma: no cover
-    from epub_mcp import EbooklibEPUBMCPClient  # type: ignore
-
-if TYPE_CHECKING:  # pragma: no cover - typing aid
-    from ..epub_agent import EPUBAgentState
-
 logger = logging.getLogger(__name__)
 
-_MODEL_NAME = "openai/gpt-5.2"
+_MODEL_NAME = "anthropic/claude-opus-4.6"
 
 _BLOCK_LEVEL_TAGS = {
     "article", "aside", "blockquote", "br", "div", "footer",
@@ -86,77 +78,6 @@ class _ContentStripper(HTMLParser):
         self._parts.append(" ")
 
 
-def make_extract_text_node(
-    mcp_client: EbooklibEPUBMCPClient,
-    *,
-    cache_path: Optional[Path] = None,
-    debug_output_path: Optional[Path] = None,
-) -> Callable[["EPUBAgentState"], "EPUBAgentState"]:
-    stripper = _ContentStripper()
-
-    def extract_text(state: "EPUBAgentState") -> "EPUBAgentState":
-        chapters: List[Dict[str, Any]] = list(state.get("chapters") or [])
-        epub_path: str = state.get("epub_path", "")
-        errors: List[str] = list(state.get("errors") or [])
-
-        if not chapters or not epub_path:
-            return {"chapters": chapters, "errors": errors}
-
-        # Fetch raw HTML for all chapters
-        raw_html_map: Dict[int, str] = {}
-        for chapter in chapters:
-            href = chapter.get("href", "")
-            chapter_number = chapter.get("chapter_number")
-            if not href or not isinstance(chapter_number, int):
-                continue
-            response = mcp_client.get_chapter_content(epub_path, href=href)
-            if response:
-                raw_html_map[chapter_number] = response.get("content_text", "")
-
-        if not raw_html_map:
-            logger.warning("No raw HTML could be fetched; skipping extract_text.")
-            return {"chapters": chapters, "errors": errors}
-
-        # Sort by raw HTML length and pick chapter closest to the median
-        sorted_by_length = sorted(raw_html_map.items(), key=lambda x: len(x[1]))
-        median_idx = len(sorted_by_length) // 2
-        representative_number, representative_html = sorted_by_length[median_idx]
-        logger.info(
-            "Representative chapter for rule generation: chapter_number=%s, html_length=%s",
-            representative_number,
-            len(representative_html),
-        )
-
-        # Ask LLM to generate regex rules for removing unwanted content
-        rules = _generate_cleanup_rules(representative_html, errors, cache_path=cache_path)
-        if not rules:
-            logger.warning("No cleanup rules generated; using raw HTML with plain stripping.")
-
-        # Apply rules to each chapter's raw HTML, then strip
-        updated_chapters = []
-        removed_text_map: Dict[int, List[str]] = {}
-        for chapter in chapters:
-            chapter_number = chapter.get("chapter_number")
-            raw_html = raw_html_map.get(chapter_number, "") if isinstance(chapter_number, int) else ""
-            if raw_html:
-                cleaned_html, removed = _apply_rules(raw_html, rules, stripper)
-                content_text = stripper.clean(cleaned_html)
-                if isinstance(chapter_number, int):
-                    removed_text_map[chapter_number] = removed
-            else:
-                content_text = chapter.get("content_text", "")
-            chapter_copy = dict(chapter)
-            chapter_copy["content_text"] = content_text
-            updated_chapters.append(chapter_copy)
-
-        if debug_output_path is not None:
-            _save_debug(updated_chapters, rules, removed_text_map, debug_output_path)
-
-        return {"chapters": updated_chapters, "errors": errors}
-
-    return extract_text
-
-
 def _apply_rules(html: str, rules: List[str], stripper: _ContentStripper) -> tuple[str, List[str]]:
     removed: List[str] = []
     for pattern in rules:
@@ -183,11 +104,12 @@ def _generate_cleanup_rules(
         "that should be removed before generating an audio book.\n"
         "Unwanted content includes: tables, image captions, footnotes, page numbers, "
         "synopsis, chapter summaries, sidebars, and any non-narrative elements.\n"
-        "Generate regex patterns that match HTML elements containing such content. "
+        "Generate regex patterns that match HTML elements containing such content. " 
         "Each pattern must match a complete HTML fragment (opening tag through closing tag or self-closing). "
         "Use tag names, class name patterns, or id patterns to target the right elements. "
         "Patterns will be applied with re.sub(pattern, '', html, flags=re.DOTALL|re.IGNORECASE).\n"
-        "Return a JSON array of regex pattern strings, nothing else. "
+        "Patterns need to be generic, they will be applied to whole book not only this chapter.\n" 
+        "Return MUST be a JSON array of regex pattern strings, nothing else. "
         "If no unwanted content is detected, return an empty array []."
     )
 
@@ -244,6 +166,13 @@ def _generate_cleanup_rules(
         if cache_path is not None:
             _store_cached_response(request_payload, content, cache_path=cache_path)
 
+    # Strip markdown code fences if the LLM wrapped the JSON (e.g. ```json ... ```)
+    stripped = content.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
+        stripped = re.sub(r"\n?```$", "", stripped).strip()
+        content = stripped
+
     try:
         raw_rules = json.loads(content)
     except json.JSONDecodeError:
@@ -256,7 +185,6 @@ def _generate_cleanup_rules(
         errors.append("Cleanup rules response is not a list.")
         return []
 
-    # Validate each rule is a valid regex
     valid_rules: List[str] = []
     for rule in raw_rules:
         if not isinstance(rule, str):

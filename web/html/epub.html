@@ -54,6 +54,23 @@ if not return 404, else return the content of book.json and display it in code e
 <div id="status-bar" class="status-bar">Ready.</div>
     </section>
 
+    <section id="review-card" class="panel d-none">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+          <h2 class="h5 mb-0">Review Cleanup Rules</h2>
+          <p class="text-muted small mb-0 mt-1">Check the rules you want to apply. Preview shows a sample of text each rule would remove.</p>
+        </div>
+        <div class="d-flex gap-2">
+          <button class="btn btn-sm btn-outline-secondary" id="approve-all-btn">Approve All</button>
+          <button class="btn btn-sm btn-outline-danger" id="reject-all-btn">Reject All</button>
+          <button class="btn btn-sm btn-success" id="submit-review-btn">
+            <i class="fa-solid fa-check"></i> Submit Review
+          </button>
+        </div>
+      </div>
+      <div id="rules-list"></div>
+    </section>
+
     <section class="cover-card" id="cover-card" aria-live="polite">
       <div class="cover-header">
         <span class="cover-title">Cover image</span>
@@ -490,6 +507,11 @@ if not return 404, else return the content of book.json and display it in code e
           const message = data.progress_msg || '';
           setJobStatus(status, progress, message);
 
+          if (status === 'awaiting_input') {
+            if (jobPollTimer) clearTimeout(jobPollTimer);
+            loadReviewData(jobId);
+            return;
+          }
           if (status === 'success') {
             await loadResult();
             stopProgress();
@@ -508,6 +530,73 @@ if not return 404, else return the content of book.json and display it in code e
           setStatus('Failed to fetch job status.', 'error');
           stopProgress();
           parseBtn.prop('disabled', false);
+        }
+      }
+
+      async function loadReviewData(jobId) {
+        setStatus('Cleanup rules generated. Please review and approve.', 'info');
+        stopProgress();
+        try {
+          const res = await fetchWithRefresh(`/api/job/${encodeURIComponent(jobId)}/review`);
+          if (!res.ok) { setStatus('Failed to load review data.', 'error'); return; }
+          const data = await res.json();
+          renderReviewCard(data.rule_previews || [], jobId);
+        } catch (err) {
+          console.warn('Failed to load review data', err);
+          setStatus('Failed to load review data.', 'error');
+        }
+      }
+
+      function renderReviewCard(rulePreviews, jobId) {
+        const rulesList = $('#rules-list').empty();
+        const matchingRules = (rulePreviews || []).filter(item => item.preview && item.preview.trim());
+        if (!matchingRules.length) {
+          rulesList.html('<p class="text-muted">No cleanup rules matched any content. Click Submit to continue.</p>');
+        } else {
+          matchingRules.forEach(item => {
+            const escapedRule = $('<div>').text(item.rule).html();
+            const previewText = item.preview || 'No match found in any chapter.';
+            const escapedPreview = $('<div>').text(previewText).html();
+            rulesList.append(`
+              <div class="card mb-2">
+                <div class="card-body d-flex gap-3 align-items-start">
+                  <input type="checkbox" class="form-check-input mt-1 rule-checkbox flex-shrink-0" checked data-rule="${escapedRule}">
+                  <div class="overflow-hidden">
+                    <code class="d-block text-break small mb-1">${escapedRule}</code>
+                    <p class="text-muted small mb-0"><em>Sample removed:</em> ${escapedPreview}</p>
+                  </div>
+                </div>
+              </div>`);
+          });
+        }
+        $('#review-card').removeClass('d-none');
+        $('#submit-review-btn').off('click').on('click', () => submitReview(jobId));
+        $('#approve-all-btn').off('click').on('click', () => $('.rule-checkbox').prop('checked', true));
+        $('#reject-all-btn').off('click').on('click', () => $('.rule-checkbox').prop('checked', false));
+      }
+
+      async function submitReview(jobId) {
+        const approved = [];
+        $('.rule-checkbox:checked').each(function() {
+          approved.push($(this).attr('data-rule'));
+        });
+        $('#submit-review-btn').prop('disabled', true);
+        setStatus('Submitting review...', 'info');
+        try {
+          const res = await fetchWithRefresh(`/api/job/${encodeURIComponent(jobId)}/review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approved_rules: approved })
+          });
+          if (!res.ok) throw new Error('Submit failed');
+          $('#review-card').addClass('d-none');
+          startProgress();
+          setStatus('Applying approved rules...', 'info');
+          pollJob(jobId);
+        } catch (err) {
+          console.warn('Failed to submit review', err);
+          setStatus('Failed to submit review.', 'error');
+          $('#submit-review-btn').prop('disabled', false);
         }
       }
 

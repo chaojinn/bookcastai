@@ -97,17 +97,23 @@ class JobPayload(BaseModel):
     params: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class ReviewPayload(BaseModel):
+    approved_rules: List[str] = Field(default_factory=list)
+
+
 @dataclass
 class Job:
     id: str
     command: str
     params: List[Dict[str, Any]] = field(default_factory=list)
+    # status values: queued / running / awaiting_input / cancelled / success / fail
     status: str = "queued"
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     task: Optional[asyncio.Task] = None
     progress: int = 0
     progress_msg: str = ""
+    agent: Optional[Any] = field(default=None, repr=False)  # holds EPUBAgent during HITL pause
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -337,21 +343,53 @@ async def _handle_parse_epub(job: Job) -> None:
     def publish_progress(progress: int, message: str | None = None) -> None:
         _set_progress(job, progress, message or "")
 
+    agent = EPUBAgent()
+    job.agent = agent
+
     try:
-        agent = EPUBAgent()
         await asyncio.to_thread(
-            agent.run_epub_agent,
+            agent.run_phase1,
             str(epub_path),
             debug_mode=True,
             debug_path=str(epub_dir),
             publish_progress=publish_progress,
         )
     except Exception as exc:
-        logger.exception("parse_epub job failed for %s", job.id)
+        logger.exception("parse_epub phase1 failed for %s", job.id)
         job.status = "fail"
         job.finished_at = _utc_now()
+        job.agent = None
         _set_progress(job, 100, str(exc) or "EPUB parsing failed.")
         return
+
+    # Pause for human rule review — phase 2 is triggered by POST /api/job/{id}/review
+    job.status = "awaiting_input"
+    job.progress = 50
+    job.progress_msg = "Waiting for cleanup rule review."
+
+
+async def _resume_parse_epub(job: Job, approved_rules: List[str]) -> None:
+    """Phase 2: inject approved rules and run the rest of the graph."""
+    agent = job.agent
+    if agent is None:
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, "Agent not available for phase 2.")
+        return
+
+    job.status = "running"
+    _set_progress(job, 50, "Applying approved rules...")
+
+    try:
+        await asyncio.to_thread(agent.run_phase2, approved_rules)
+    except Exception as exc:
+        logger.exception("parse_epub phase2 failed for %s", job.id)
+        job.status = "fail"
+        job.finished_at = _utc_now()
+        _set_progress(job, 100, str(exc) or "EPUB phase 2 failed.")
+        return
+    finally:
+        job.agent = None
 
     job.status = "success"
     job.finished_at = _utc_now()
@@ -570,6 +608,7 @@ async def cancel_job(
             job.status = "cancelled"
             job.finished_at = _utc_now()
             _set_progress(job, 100, "Cancelled.")
+        job.agent = None
         try:
             _job_queue.remove(job_id)
         except ValueError:
@@ -593,6 +632,43 @@ async def list_jobs(
             if jid in _jobs
         ]
     return jobs
+
+
+@router.get("/api/job/{job_id}/review")
+async def get_job_review(
+    job_id: str,
+    session: SessionContainer = Depends(verify_session()),
+) -> Dict[str, Any]:
+    _ensure_async_state()
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.status != "awaiting_input":
+        raise HTTPException(status_code=409, detail="Job is not awaiting input.")
+    agent = job.agent
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not available.")
+    try:
+        rule_previews = agent.get_review_data()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"job_id": job_id, "rule_previews": rule_previews}
+
+
+@router.post("/api/job/{job_id}/review")
+async def submit_job_review(
+    job_id: str,
+    payload: ReviewPayload,
+    session: SessionContainer = Depends(verify_session()),
+) -> Dict[str, str]:
+    _ensure_async_state()
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.status != "awaiting_input":
+        raise HTTPException(status_code=409, detail="Job is not awaiting input.")
+    asyncio.create_task(_resume_parse_epub(job, payload.approved_rules))
+    return {"id": job_id, "status": "running"}
 
 
 register_job_handler("parse_epub", _handle_parse_epub)

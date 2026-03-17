@@ -8,6 +8,9 @@ __all__ = [
     "make_normalize_first_sentence_node",
     "make_construct_book_structure_node",
     "make_assemble_payload_node",
+    "make_generate_rules_node",
+    "make_review_rules_node",
+    "make_apply_rules_node",
     "EPUBTextProcessor",
 ]
 
@@ -19,4 +22,7 @@ from .normalize_titles import make_normalize_titles_node
 from .normalize_first_sentence import make_normalize_first_sentence_node
 from .construct_book_structure import make_construct_book_structure_node
 from .assemble_payload import make_assemble_payload_node
+from .generate_rules import make_generate_rules_node
+from .review_rules import make_review_rules_node
+from .apply_rules import make_apply_rules_node
 from .text_processing import EPUBTextProcessor

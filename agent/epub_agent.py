@@ -4,11 +4,13 @@ import argparse
 import json
 import logging
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 try:
     from langgraph.graph import END, StateGraph
+    from langgraph.checkpoint.memory import MemorySaver
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "langgraph is required. Install it via 'pip install langgraph'.",
@@ -37,6 +39,11 @@ class EPUBAgentState(TypedDict, total=False):
     cover_image_media_type: Optional[str]
     errors: List[str]
     result: Dict[str, Any]
+    # extract_text split
+    cleanup_rules: List[str]
+    raw_html_map: Dict[int, str]
+    approved_rules: List[str]
+    rule_previews: List[Dict[str, Any]]
 
 
 try:  # pragma: no cover - import shim for script execution
@@ -46,7 +53,9 @@ try:  # pragma: no cover - import shim for script execution
     from .nodes.fetch_chapter_content_raw import make_fetch_chapter_content_raw_node
     from .nodes.construct_book_structure import make_construct_book_structure_node
     from .nodes.normalize_titles import make_normalize_titles_node
-    from .nodes.extract_text import make_extract_text_node
+    from .nodes.generate_rules import make_generate_rules_node
+    from .nodes.review_rules import make_review_rules_node
+    from .nodes.apply_rules import make_apply_rules_node
     from .nodes.normalize_first_sentence import make_normalize_first_sentence_node
     from .nodes.assemble_payload import make_assemble_payload_node
 except ImportError:  # pragma: no cover
@@ -59,7 +68,9 @@ except ImportError:  # pragma: no cover
     from nodes.fetch_chapter_content_raw import make_fetch_chapter_content_raw_node  # type: ignore
     from nodes.construct_book_structure import make_construct_book_structure_node  # type: ignore
     from nodes.normalize_titles import make_normalize_titles_node  # type: ignore
-    from nodes.extract_text import make_extract_text_node  # type: ignore
+    from nodes.generate_rules import make_generate_rules_node  # type: ignore
+    from nodes.review_rules import make_review_rules_node  # type: ignore
+    from nodes.apply_rules import make_apply_rules_node  # type: ignore
     from nodes.normalize_first_sentence import make_normalize_first_sentence_node  # type: ignore
     from nodes.assemble_payload import make_assemble_payload_node  # type: ignore
 
@@ -80,7 +91,9 @@ def _build_graph(
         ("fetch_chapter_content_raw", make_fetch_chapter_content_raw_node(mcp_client), "Fetched chapter content"),
         ("construct_book_structure", make_construct_book_structure_node(cache_path=cache_path), "Constructed book structure"),
         ("normalize_titles", make_normalize_titles_node(cache_path=cache_path), "Normalized titles"),
-        ("extract_text", make_extract_text_node(mcp_client, cache_path=cache_path, debug_output_path=debug_output_path), "Extracted text"),
+        ("generate_rules", make_generate_rules_node(mcp_client, cache_path=cache_path), "Generated cleanup rules"),
+        ("review_rules", make_review_rules_node(), "Reviewed rules"),
+        ("apply_rules", make_apply_rules_node(debug_output_path=debug_output_path), "Applied cleanup rules"),
         ("normalize_first_sentence", make_normalize_first_sentence_node(cache_path=cache_path, debug_output_path=first_sentence_debug_path), "Normalized first sentences"),
         ("assemble_payload", make_assemble_payload_node(), "Assembled payload"),
     ]
@@ -112,12 +125,17 @@ def _build_graph(
     graph.add_edge("fetch_table_of_contents", "fetch_chapter_content_raw")
     graph.add_edge("fetch_chapter_content_raw", "construct_book_structure")
     graph.add_edge("construct_book_structure", "normalize_titles")
-    graph.add_edge("normalize_titles", "extract_text")
-    graph.add_edge("extract_text", "normalize_first_sentence")
+    graph.add_edge("normalize_titles", "generate_rules")
+    graph.add_edge("generate_rules", "review_rules")
+    graph.add_edge("review_rules", "apply_rules")
+    graph.add_edge("apply_rules", "normalize_first_sentence")
     graph.add_edge("normalize_first_sentence", "assemble_payload")
     graph.add_edge("assemble_payload", END)
 
-    return graph.compile()
+    return graph.compile(
+        checkpointer=MemorySaver(),
+        interrupt_before=["review_rules"],
+    )
 
 
 def _assemble_debug_payload(state: EPUBAgentState) -> Dict[str, Any]:
@@ -143,79 +161,131 @@ def _assemble_debug_payload(state: EPUBAgentState) -> Dict[str, Any]:
     }
 
 
+def _write_result(final_state: EPUBAgentState, epub_path_str: str, debug_mode: bool, debug_path: Optional[str]) -> Dict[str, Any]:
+    """Write result JSON next to epub and (optionally) debug output. Returns result dict."""
+    result = final_state.get("result", {})
+    epub_dir = Path(epub_path_str).parent
+    epub_stem = Path(epub_path_str).stem
+    result_file = epub_dir / f"{epub_stem}.json"
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    with result_file.open("w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=2, ensure_ascii=False)
+    logger.info("Result written to %s", result_file)
+
+    if debug_mode and debug_path:
+        payload = _assemble_debug_payload(final_state)
+        out_file = Path(debug_path).expanduser() / (epub_stem + "_raw.json")
+        with out_file.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+        logger.info("Debug output written to %s", out_file)
+
+    return result
+
+
 class EPUBAgent:
-    """Lightweight LangGraph agent for extracting raw EPUB content."""
+    """LangGraph agent for extracting raw EPUB content with optional HITL rule review."""
 
     def __init__(self, mcp_client: Optional[EbooklibEPUBMCPClient] = None) -> None:
         self._mcp_client = mcp_client or EbooklibEPUBMCPClient()
+        self._compiled_graph: Optional[Any] = None
+        self._thread_config: Optional[Dict[str, Any]] = None
+        self._epub_path_str: Optional[str] = None
+        self._debug_mode: bool = False
+        self._debug_path: Optional[str] = None
 
-    def run_epub_agent(
+    def run_phase1(
         self,
         epub_path: str,
-        options: Optional[Dict[str, str]] = None,
         debug_mode: bool = True,
         debug_path: Optional[str] = None,
         publish_progress: Optional[Callable[[int, str], None]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Run the raw EPUB extraction pipeline.
+    ) -> None:
+        """Run the pipeline up to the HITL interrupt (before review_rules).
 
-        Parameters
-        ----------
-        epub_path:
-            Path to the .epub file.
-        options:
-            Key/value options (reserved for future use).
-        debug_mode:
-            When True, write debug files to debug_path.
-        debug_path:
-            Directory where debug output is saved. Required when debug_mode is True.
+        After this call, ``get_review_data()`` can be used to retrieve rule previews,
+        and ``run_phase2()`` resumes execution after human approval.
         """
         if debug_mode and not debug_path:
             raise ValueError("debug_path is required when debug_mode is True")
 
-        options = options or {}
-        epub_path_str = str(Path(epub_path).expanduser().resolve())
-        epub_stem = Path(epub_path_str).stem
+        self._epub_path_str = str(Path(epub_path).expanduser().resolve())
+        self._debug_mode = debug_mode
+        self._debug_path = debug_path
+        epub_stem = Path(self._epub_path_str).stem
 
         cache_path: Optional[Path] = None
         debug_output_path: Optional[Path] = None
         first_sentence_debug_path: Optional[Path] = None
-        if debug_mode:
+        if debug_mode and debug_path:
             out_dir = Path(debug_path).expanduser()
             out_dir.mkdir(parents=True, exist_ok=True)
             cache_path = out_dir / f"{epub_stem}_llm_cache.json"
             debug_output_path = out_dir / f"{epub_stem}_cleaned.json"
             first_sentence_debug_path = out_dir / f"{epub_stem}_first_sentence.json"
 
-        graph = _build_graph(
+        self._compiled_graph = _build_graph(
             self._mcp_client,
             cache_path=cache_path,
             debug_output_path=debug_output_path,
             first_sentence_debug_path=first_sentence_debug_path,
             publish_progress=publish_progress,
         )
-        initial_state: EPUBAgentState = {"epub_path": epub_path_str}
 
-        final_state = graph.invoke(initial_state)
+        thread_id = str(uuid.uuid4())
+        self._thread_config = {"configurable": {"thread_id": thread_id}}
 
-        # Write final result next to the epub file
-        result = final_state.get("result", {})
-        epub_dir = Path(epub_path_str).parent
-        result_file = epub_dir / f"{epub_stem}.json"
-        result_file.parent.mkdir(parents=True, exist_ok=True)
-        with result_file.open("w", encoding="utf-8") as fh:
-            json.dump(result, fh, indent=2, ensure_ascii=False)
-        logger.info("Result written to %s", result_file)
+        initial_state: EPUBAgentState = {"epub_path": self._epub_path_str}
+        self._compiled_graph.invoke(initial_state, config=self._thread_config)
+        # Returns here because of interrupt_before=["review_rules"]
 
-        if debug_mode:
-            payload = _assemble_debug_payload(final_state)
-            out_file = Path(debug_path).expanduser() / (epub_stem + "_raw.json")
-            with out_file.open("w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2, ensure_ascii=False)
-            logger.info("Debug output written to %s", out_file)
+    def get_review_data(self) -> List[Dict[str, Any]]:
+        """Return rule_previews from the checkpointed state (call after run_phase1)."""
+        if self._compiled_graph is None or self._thread_config is None:
+            return []
+        state_snapshot = self._compiled_graph.get_state(self._thread_config)
+        return list(state_snapshot.values.get("rule_previews") or [])
 
-        return result
+    def run_phase2(self, approved_rules: List[str]) -> Dict[str, Any]:
+        """Inject approved rules and resume graph execution to completion."""
+        if self._compiled_graph is None or self._thread_config is None:
+            raise RuntimeError("run_phase1 must be called before run_phase2")
+
+        self._compiled_graph.update_state(
+            self._thread_config,
+            {"approved_rules": approved_rules},
+        )
+        final_state = self._compiled_graph.invoke(None, config=self._thread_config)
+
+        return _write_result(
+            final_state,
+            self._epub_path_str,
+            self._debug_mode,
+            self._debug_path,
+        )
+
+    def run_epub_agent(
+        self,
+        epub_path: str,
+        options: Optional[Dict[str, str]] = None,  # reserved for future use
+        debug_mode: bool = True,
+        debug_path: Optional[str] = None,
+        publish_progress: Optional[Callable[[int, str], None]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the full EPUB extraction pipeline (non-interactive, auto-approves all rules).
+
+        This preserves the original CLI / job-queue interface. For interactive HITL,
+        use ``run_phase1`` / ``get_review_data`` / ``run_phase2`` directly.
+        """
+        self.run_phase1(
+            epub_path,
+            debug_mode=debug_mode,
+            debug_path=debug_path,
+            publish_progress=publish_progress,
+        )
+        review_data = self.get_review_data()
+        all_rules = [item["rule"] for item in review_data if isinstance(item.get("rule"), str)]
+        return self.run_phase2(all_rules)
 
 
 def _configure_logging(level: str = "DEBUG") -> None:
