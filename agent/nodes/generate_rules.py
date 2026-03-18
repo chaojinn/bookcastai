@@ -25,11 +25,11 @@ _PREVIEW_MAX_CHARS = 300
 
 def _compute_rule_preview(
     rule: str,
-    raw_html_map: Dict[int, str],
+    raw_html_map: Dict[str, str],
     stripper: _ContentStripper,
 ) -> str:
     """Return a plain-text preview of the first content removed by *rule* across all chapters."""
-    for chapter_number in sorted(raw_html_map):
+    for chapter_number in sorted(raw_html_map, key=lambda k: int(k) if k.isdigit() else k):
         html = raw_html_map[chapter_number]
         try:
             matches = re.findall(rule, html, flags=re.DOTALL | re.IGNORECASE)
@@ -59,8 +59,8 @@ def make_generate_rules_node(
         if not chapters or not epub_path:
             return {"chapters": chapters, "errors": errors, "cleanup_rules": [], "raw_html_map": {}, "rule_previews": []}
 
-        # Fetch raw HTML for all chapters
-        raw_html_map: Dict[int, str] = {}
+        # Fetch raw HTML for all chapters (use str keys — int keys are lost by JSON serialization in checkpointer)
+        raw_html_map: Dict[str, str] = {}
         for chapter in chapters:
             href = chapter.get("href", "")
             chapter_number = chapter.get("chapter_number")
@@ -68,7 +68,7 @@ def make_generate_rules_node(
                 continue
             response = mcp_client.get_chapter_content(epub_path, href=href)
             if response:
-                raw_html_map[chapter_number] = response.get("content_text", "")
+                raw_html_map[str(chapter_number)] = response.get("content_text", "")
 
         if not raw_html_map:
             logger.warning("No raw HTML could be fetched; skipping rule generation.")

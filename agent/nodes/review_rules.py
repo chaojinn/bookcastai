@@ -1,23 +1,22 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, List
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ..epub_agent import EPUBAgentState
 
 
 def make_review_rules_node() -> Callable[["EPUBAgentState"], "EPUBAgentState"]:
-    """Return a pass-through validation node that is the HITL interrupt point.
+    """Return a pass-through node that is the HITL interrupt point.
 
     Execution only reaches this node after ``approved_rules`` has been injected
-    via ``graph.update_state()`` by the review API endpoint.  The node validates
-    that every approved rule is a known cleanup rule (dropping unknown entries).
+    via ``graph.update_state()`` by the review API endpoint.  The node passes
+    ``approved_rules`` through unchanged — the frontend receives rule strings
+    directly from the backend so no re-validation is needed.
     """
 
     def review_rules(state: "EPUBAgentState") -> "EPUBAgentState":
-        approved: List[str] = list(state.get("approved_rules") or [])
-        known: set = set(state.get("cleanup_rules") or [])
-        valid = [r for r in approved if r in known]
-        return {"approved_rules": valid}
+        # Just propagate whatever the human submitted; apply_rules will use it.
+        return {}
 
     return review_rules

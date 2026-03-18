@@ -24,7 +24,7 @@ def make_apply_rules_node(
     def apply_rules(state: "EPUBAgentState") -> "EPUBAgentState":
         chapters: List[Dict[str, Any]] = list(state.get("chapters") or [])
         approved_rules: List[str] = list(state.get("approved_rules") or [])
-        raw_html_map: Dict[int, str] = dict(state.get("raw_html_map") or {})
+        raw_html_map: Dict[str, str] = dict(state.get("raw_html_map") or {})
         errors: List[str] = list(state.get("errors") or [])
 
         updated_chapters = []
@@ -32,7 +32,8 @@ def make_apply_rules_node(
 
         for chapter in chapters:
             chapter_number = chapter.get("chapter_number")
-            raw_html = raw_html_map.get(chapter_number, "") if isinstance(chapter_number, int) else ""
+            # Use str key — int keys are lost when the checkpointer serializes state via JSON
+            raw_html = raw_html_map.get(str(chapter_number), "") if isinstance(chapter_number, int) else ""
             if raw_html:
                 if approved_rules:
                     cleaned_html, removed = _apply_rules(raw_html, approved_rules, stripper)

@@ -547,20 +547,24 @@ if not return 404, else return the content of book.json and display it in code e
         }
       }
 
+      // Rules stored in a plain JS array — never put regex strings in DOM attributes.
+      let _reviewRules = [];
+
       function renderReviewCard(rulePreviews, jobId) {
         const rulesList = $('#rules-list').empty();
         const matchingRules = (rulePreviews || []).filter(item => item.preview && item.preview.trim());
+        _reviewRules = matchingRules.map(item => item.rule);  // store raw strings here
         if (!matchingRules.length) {
           rulesList.html('<p class="text-muted">No cleanup rules matched any content. Click Submit to continue.</p>');
         } else {
-          matchingRules.forEach(item => {
+          matchingRules.forEach((item, idx) => {
             const escapedRule = $('<div>').text(item.rule).html();
-            const previewText = item.preview || 'No match found in any chapter.';
-            const escapedPreview = $('<div>').text(previewText).html();
+            const escapedPreview = $('<div>').text(item.preview).html();
+            // data-rule-idx is a safe integer — no special characters possible
             rulesList.append(`
               <div class="card mb-2">
                 <div class="card-body d-flex gap-3 align-items-start">
-                  <input type="checkbox" class="form-check-input mt-1 rule-checkbox flex-shrink-0" checked data-rule="${escapedRule}">
+                  <input type="checkbox" class="form-check-input mt-1 rule-checkbox flex-shrink-0" checked data-rule-idx="${idx}">
                   <div class="overflow-hidden">
                     <code class="d-block text-break small mb-1">${escapedRule}</code>
                     <p class="text-muted small mb-0"><em>Sample removed:</em> ${escapedPreview}</p>
@@ -578,7 +582,8 @@ if not return 404, else return the content of book.json and display it in code e
       async function submitReview(jobId) {
         const approved = [];
         $('.rule-checkbox:checked').each(function() {
-          approved.push($(this).attr('data-rule'));
+          const idx = parseInt($(this).attr('data-rule-idx'), 10);
+          if (!isNaN(idx) && idx < _reviewRules.length) approved.push(_reviewRules[idx]);
         });
         $('#submit-review-btn').prop('disabled', true);
         setStatus('Submitting review...', 'info');

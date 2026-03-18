@@ -41,7 +41,7 @@ class EPUBAgentState(TypedDict, total=False):
     result: Dict[str, Any]
     # extract_text split
     cleanup_rules: List[str]
-    raw_html_map: Dict[int, str]
+    raw_html_map: Dict[str, str]
     approved_rules: List[str]
     rule_previews: List[Dict[str, Any]]
 
