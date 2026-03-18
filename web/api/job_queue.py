@@ -95,6 +95,7 @@ JobHandler = Callable[["Job"], Awaitable[None] | None]
 class JobPayload(BaseModel):
     command: str = Field(..., min_length=1)
     params: List[Dict[str, Any]] = Field(default_factory=list)
+    start_immediately: bool = True
 
 
 class ReviewPayload(BaseModel):
@@ -571,24 +572,30 @@ async def create_job(
     # Inject user_id into params for path resolution in handlers
     user_id = session.get_user_id()
     params_with_user = list(payload.params) + [{"key": "user_id", "value": user_id}]
+    initial_status = "queued" if payload.start_immediately else "paused"
+    initial_msg = "Queued." if payload.start_immediately else "Paused."
     job = Job(
         id=job_id,
         command=payload.command,
         params=params_with_user,
-        status="queued",
+        status=initial_status,
         progress=0,
-        progress_msg="Queued.",
+        progress_msg=initial_msg,
     )
     if _queue_lock is None:
         raise HTTPException(status_code=500, detail="Job queue is unavailable.")
     async with _queue_lock:
         _jobs[job_id] = job
-        _job_queue.append(job_id)
         _job_order.append(job_id)
-        await _prune_jobs_locked()
-        if _queue_event is not None:
-            _queue_event.set()
-    await _ensure_worker()
+        if payload.start_immediately:
+            _job_queue.append(job_id)
+            await _prune_jobs_locked()
+            if _queue_event is not None:
+                _queue_event.set()
+        else:
+            await _prune_jobs_locked()
+    if payload.start_immediately:
+        await _ensure_worker()
     return {"id": job_id}
 
 
@@ -616,6 +623,29 @@ async def cancel_job(
     if job.task and not job.task.done():
         job.task.cancel()
     return {"id": job_id, "status": job.status}
+
+
+@router.post("/api/job/{job_id}/start")
+async def start_job(
+    job_id: str,
+    session: SessionContainer = Depends(verify_session()),
+) -> Dict[str, str]:
+    _ensure_async_state()
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.status != "paused":
+        raise HTTPException(status_code=409, detail="Job is not paused.")
+    if _queue_lock is None:
+        raise HTTPException(status_code=500, detail="Job queue is unavailable.")
+    async with _queue_lock:
+        job.status = "queued"
+        job.progress_msg = "Queued."
+        _job_queue.append(job_id)
+        if _queue_event is not None:
+            _queue_event.set()
+    await _ensure_worker()
+    return {"id": job_id, "status": "queued"}
 
 
 @router.get("/api/jobs")

@@ -38,6 +38,9 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         <button class="btn btn-outline-secondary" id="publish-btn" disabled>
           <i class="fa-solid fa-rss"></i> Publish Feed
         </button>
+        <button class="btn btn-outline-primary" id="queue-btn" disabled>
+          <i class="fa-solid fa-clock"></i> Queue TTS Task
+        </button>
         <button class="btn btn-primary" id="start-btn" disabled>
           <i class="fa-solid fa-play"></i> Start TTS
         </button>
@@ -121,6 +124,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       const overwriteCheck = $('#overwrite-check');
       const quantizeCheck = $('#quantize-check');
       const startBtn = $('#start-btn');
+      const queueBtn = $('#queue-btn');
       const publishBtn = $('#publish-btn');
       const statusBar = $('#status-bar');
       const progressBar = $('#progress-bar');
@@ -187,6 +191,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       function updateControlState() {
         const canStart = pageReady && voicesAvailable && !jobRunning;
         startBtn.prop('disabled', !canStart);
+        queueBtn.prop('disabled', !canStart);
         publishBtn.prop('disabled', !pageReady || jobRunning || feedPublishing);
         modelSelect.prop('disabled', !pageReady || jobRunning);
         voiceSelect.prop('disabled', !pageReady || jobRunning || !voicesAvailable);
@@ -405,6 +410,41 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
           stopProgress();
           jobRunning = false;
           updateControlState();
+        }
+      });
+
+      queueBtn.on('click', async () => {
+        if (!podTitle) return;
+        const modelName = modelSelect.val();
+        const voiceCode = voiceSelect.val();
+        const speed = Number(speedRange.val());
+        const overwrite = overwriteCheck.is(':checked');
+        const quantize = quantizeCheck.is(':checked');
+        const temperature = Number(temperatureRange.val());
+        try {
+          const res = await fetchWithRefresh('/api/job', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              command: 'tts',
+              start_immediately: false,
+              params: [
+                { key: 'book_title', value: podTitle },
+                { key: 'model_name', value: modelName },
+                { key: 'voice', value: voiceCode },
+                { key: 'speed', value: speed },
+                { key: 'temperature', value: temperature },
+                { key: 'overwrite', value: overwrite },
+                { key: 'quantize', value: quantize }
+              ]
+            })
+          });
+          if (!res.ok) throw new Error('Queue request failed');
+          statusBar.html('Job queued. <a href="/queue.html">View in Job Queue</a>.');
+          statusBar.removeClass('status-error status-info').addClass('status-success');
+        } catch (err) {
+          console.warn('Failed to queue TTS', err);
+          setStatus('Failed to queue TTS job.', 'error');
         }
       });
 

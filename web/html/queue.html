@@ -91,6 +91,7 @@
   <script src="/js/main.js"></script>
   <script>
     const BADGE = {
+      paused:    'secondary',
       queued:    'secondary',
       running:   'primary',
       success:   'success',
@@ -110,7 +111,7 @@
     }
 
     function render(jobs) {
-      const waiting = jobs.filter(j => j.status === 'queued').length;
+      const waiting = jobs.filter(j => j.status === 'queued' || j.status === 'paused').length;
       const running = jobs.filter(j => j.status === 'running').length;
       const done    = jobs.filter(j => ['success', 'fail', 'cancelled'].includes(j.status)).length;
 
@@ -145,7 +146,10 @@
           : j.status === 'success'
             ? `<div class="progress" style="height:10px"><div class="progress-bar bg-success" style="width:100%"></div></div>`
             : `<div class="text-secondary small">${pct}%</div>`;
-        const removeBtn = j.status === 'queued'
+        const startBtn = j.status === 'paused'
+          ? `<button class="btn btn-sm btn-outline-primary btn-start-job" data-job-id="${j.id}" title="Start job"><i class="fa-solid fa-play"></i></button>`
+          : '';
+        const removeBtn = (j.status === 'queued' || j.status === 'paused')
           ? `<button class="btn btn-sm btn-outline-danger btn-remove-job" data-job-id="${j.id}" title="Remove from queue"><i class="fa-solid fa-xmark"></i></button>`
           : '';
         tbody.append(`
@@ -155,7 +159,7 @@
             <td>${bar}</td>
             <td class="text-secondary small text-nowrap">${fmtTime(j.started_at)}</td>
             <td class="text-secondary small">${$('<span>').text(j.progress_msg || '').html()}</td>
-            <td>${removeBtn}</td>
+            <td class="d-flex gap-1">${startBtn}${removeBtn}</td>
           </tr>
         `);
       });
@@ -175,6 +179,16 @@
       }
     }
 
+    async function startJob(jobId) {
+      try {
+        const res = await fetchWithRefresh(`/api/job/${encodeURIComponent(jobId)}/start`, { method: 'POST' });
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        await loadJobs();
+      } catch (err) {
+        console.warn('Failed to start job', err);
+      }
+    }
+
     async function removeJob(jobId) {
       try {
         const res = await fetchWithRefresh(`/api/job/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
@@ -188,6 +202,9 @@
     $(function () {
       loadJobs();
       setInterval(loadJobs, 2000);
+      $('#jobs-tbody').on('click', '.btn-start-job', function () {
+        startJob(this.getAttribute('data-job-id'));
+      });
       $('#jobs-tbody').on('click', '.btn-remove-job', function () {
         removeJob(this.getAttribute('data-job-id'));
       });
