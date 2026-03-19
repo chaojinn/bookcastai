@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from collections.abc import Callable
 
@@ -91,10 +92,26 @@ def _chapter_output_path(base_dir: Path, number: int, title: str) -> Path:
     return base_dir / f"{stem}.mp3"
 
 
+def _format_eta(seconds: float) -> str:
+    """Format a remaining-time estimate as a human-readable string."""
+    if seconds < 0:
+        return "—"
+    total = int(seconds)
+    m, s = divmod(total, 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"~{h}h {m}m"
+    if m > 0:
+        return f"~{m}m {s}s"
+    return f"~{s}s"
+
+
 def _synthesise_chunk(
     provider_info: dict[str, object],
     text: str,
     destination: Path,
+    *,
+    chunk_progress_callback: Callable[[int, int], None] | None = None,
 ) -> None:
     request = TTSRequest(
         text_content=text,
@@ -102,7 +119,7 @@ def _synthesise_chunk(
         raw_parameters=provider_info["parameters"],
     )
     provider: TTSProvider = provider_info["instance"]  # type: ignore[assignment]
-    provider.tts(request)
+    provider.tts(request, chunk_progress_callback=chunk_progress_callback)
 
 
 def _concat_audio_files(chapter_title: str, parts: list[Path], destination: Path) -> None:
@@ -184,6 +201,7 @@ def convert_epub_to_pod(
     output_base.mkdir(parents=True, exist_ok=True)
 
     total_chapters = len(chapters)
+    start_time = time.monotonic()
     generated_files: list[Path] = []
     for chapter_index, chapter in enumerate(chapters, start=1):
         number = chapter["chapter_number"]
@@ -215,8 +233,32 @@ def convert_epub_to_pod(
                 f"  Chunk {chunk_index}/{len(chunk_texts)}: "
                 f"{chapter['chapter_title'] or f'Chapter {number}'}"
             )
+
+            def _make_chunk_cb(ch_idx: int, total_ch: int, ck_idx: int, total_ck: int) -> Callable[[int, int], None]:
+                def cb(inner_done: int, inner_total: int) -> None:
+                    if publish_progress is None:
+                        return
+                    chapter_base = (ch_idx - 1) / total_ch
+                    fraction = (
+                        (ck_idx - 1 + inner_done / max(1, inner_total)) / total_ck
+                    ) / total_ch
+                    pct = int((chapter_base + fraction) * 100)
+                    elapsed = time.monotonic() - start_time
+                    if pct > 0:
+                        eta_secs = elapsed / (pct / 100.0) - elapsed
+                        eta_str = _format_eta(eta_secs)
+                    else:
+                        eta_str = "—"
+                    publish_progress(
+                        pct,
+                        f"chapter {ch_idx}/{total_ch}, sub-chunk {inner_done}/{inner_total}"
+                        f" | ETA {eta_str}",
+                    )
+                return cb
+
+            chunk_cb = _make_chunk_cb(chapter_index, total_chapters, chunk_index, len(chunk_texts))
             try:
-                _synthesise_chunk(provider_info, chunk_text, chunk_path)
+                _synthesise_chunk(provider_info, chunk_text, chunk_path, chunk_progress_callback=chunk_cb)
             except TTSProviderError as exc:
                 raise RuntimeError(
                     f"TTS synthesis failed for chapter '{title}' chunk {chunk_index}: {exc}"

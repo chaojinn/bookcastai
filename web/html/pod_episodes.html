@@ -53,6 +53,7 @@
       const podId = params.get('pod_id');
       let table = null;
       let podEpisodes = [];
+      let currentModel = '';
       let pendingQueueRefresh = false;
       let publishingModel = false;
 
@@ -150,7 +151,7 @@
         }
       }
 
-      async function loadPod() {
+      async function loadPod(modelName = '') {
         if (!podId) {
           showStatus('Missing pod_id in URL.', true);
           subtitleEl.textContent = 'Unable to load episodes.';
@@ -158,9 +159,10 @@
         }
 
         showStatus('Loading episodes...');
+        const modelParam = modelName ? `?model_name=${encodeURIComponent(modelName)}` : '';
         try {
           const [podsRes, queueRes] = await Promise.all([
-            fetchWithRefresh('/api/get_pods'),
+            fetchWithRefresh(`/api/get_pods${modelParam}`),
             fetchWithRefresh('/api/queue')
           ]);
           if (!podsRes.ok) throw new Error(`Request failed: ${podsRes.status}`);
@@ -180,6 +182,7 @@
             : 'No episodes found.';
 
           podEpisodes = pod.episodes || [];
+          currentModel = pod.model_name || '';
           renderTable(buildRows(queueIds));
 
           statusEl.style.display = 'none';
@@ -205,7 +208,8 @@
             body: JSON.stringify({
               pod_id: podId,
               episode_idx: Number(episodeIdx),
-              start_pos: 0
+              start_pos: 0,
+              model_name: currentModel
             })
           });
           if (!res.ok) throw new Error(`Request failed: ${res.status}`);
@@ -258,17 +262,8 @@
       async function switchModel(modelName) {
         if (!podId || publishingModel) return;
         publishingModel = true;
-        showStatus(`Switching to model "${modelName}"…`);
         try {
-          const res = await fetchWithRefresh(
-            `/api/feed/${encodeURIComponent(podId)}?model_name=${encodeURIComponent(modelName)}`,
-            { method: 'POST' }
-          );
-          if (!res.ok) throw new Error(`Feed publish failed: ${res.status}`);
-          await loadPod();
-        } catch (err) {
-          showStatus('Failed to switch model.', true);
-          console.error(err);
+          await loadPod(modelName);
         } finally {
           publishingModel = false;
         }

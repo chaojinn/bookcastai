@@ -478,6 +478,18 @@ async def _handle_tts(job: Job) -> None:
         _set_progress(job, 100, f"Invalid EPUB JSON: {exc}")
         return
 
+    chapters_raw = params.get("chapters")
+    if chapters_raw:
+        try:
+            selected_nums = {int(n) for n in json.loads(chapters_raw)}
+            if selected_nums:
+                book_data["chapters"] = [
+                    ch for ch in book_data.get("chapters", [])
+                    if int(ch.get("chapter_number", -1)) in selected_nums
+                ]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass  # invalid value -> process all chapters
+
     def publish_progress(progress: int, message: str | None = None) -> None:
         _set_progress(job, progress, message or "")
 

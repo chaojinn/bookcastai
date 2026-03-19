@@ -78,6 +78,12 @@ class PGDB:
             )
             cur.execute(
                 """
+                ALTER TABLE player_queue
+                ADD COLUMN IF NOT EXISTS model_name VARCHAR(64) DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS last_location (
                     user_id CHAR(36) PRIMARY KEY,
                     uri VARCHAR(128)
@@ -156,6 +162,7 @@ class PGDB:
         episode_idx: int,
         start_pos: int = 0,
         is_current: bool = False,
+        model_name: str = "",
     ) -> bool:
         """
         Add an episode to the player's queue or update its start position if it already exists.
@@ -184,10 +191,11 @@ class PGDB:
                     """
                     UPDATE player_queue
                     SET start_pos = %s,
-                        is_current = %s
+                        is_current = %s,
+                        model_name = %s
                     WHERE user_id = %s AND pod_id = %s AND episode_idx = %s;
                     """,
-                    (start_pos, is_current, user_id, pod_id, episode_idx),
+                    (start_pos, is_current, model_name, user_id, pod_id, episode_idx),
                 )
                 return False
 
@@ -200,10 +208,10 @@ class PGDB:
 
             cur.execute(
                 """
-                INSERT INTO player_queue (user_id, idx, pod_id, episode_idx, start_pos, is_current)
-                VALUES (%s, %s, %s, %s, %s, %s);
+                INSERT INTO player_queue (user_id, idx, pod_id, episode_idx, start_pos, is_current, model_name)
+                VALUES (%s, %s, %s, %s, %s, %s, %s);
                 """,
-                (user_id, next_idx, pod_id, episode_idx, start_pos, is_current),
+                (user_id, next_idx, pod_id, episode_idx, start_pos, is_current, model_name),
             )
             return True
 
@@ -214,7 +222,7 @@ class PGDB:
         with self._cursor() as cur:
             cur.execute(
                 """
-                SELECT idx, pod_id, episode_idx, start_pos, is_current
+                SELECT idx, pod_id, episode_idx, start_pos, is_current, model_name
                 FROM player_queue
                 WHERE user_id = %s
                 ORDER BY idx ASC;
@@ -229,6 +237,7 @@ class PGDB:
                     "episode_idx": row[2],
                     "start_pos": row[3],
                     "is_current": row[4],
+                    "model_name": row[5] or "",
                 }
                 for row in rows
             ]

@@ -47,9 +47,12 @@
     <!-- Current running job -->
     <section class="panel d-none" id="running-panel">
       <h6 class="mb-3">Current Job</h6>
-      <div class="d-flex justify-content-between mb-1">
+      <div class="d-flex justify-content-between align-items-center mb-1">
         <span id="running-command" class="fw-semibold"></span>
-        <span id="running-pct" class="text-secondary small"></span>
+        <span class="d-flex gap-3 text-secondary small">
+          <span id="running-pct"></span>
+          <span id="running-eta" class="text-info fw-semibold"></span>
+        </span>
       </div>
       <div class="progress mb-2" style="height: 18px;">
         <div
@@ -127,9 +130,12 @@
         const pct = activeJob.progress ?? 0;
         $('#running-pct').text(`${pct}%`);
         $('#running-bar').css('width', `${pct}%`).attr('aria-valuenow', pct);
-        $('#running-msg').text(activeJob.progress_msg || '');
+        const msgParts = (activeJob.progress_msg || '').split(' | ETA ');
+        $('#running-msg').text(msgParts[0]);
+        $('#running-eta').text(msgParts[1] ? `ETA ${msgParts[1]}` : '');
       } else {
         $('#running-panel').addClass('d-none');
+        $('#running-eta').text('');
       }
 
       // Job table

@@ -15,6 +15,7 @@ class QueueItemPayload(BaseModel):
     episode_idx: int
     start_pos: int = 0
     is_current: bool = False
+    model_name: str = ""
 
 
 class QueueItem(BaseModel):
@@ -23,6 +24,7 @@ class QueueItem(BaseModel):
     episode_idx: int
     start_pos: int
     is_current: bool
+    model_name: str = ""
 
 
 class MovePayload(BaseModel):
@@ -43,6 +45,7 @@ async def add_to_queue(
         payload.episode_idx,
         payload.start_pos,
         payload.is_current,
+        payload.model_name,
     )
     return {"added": added}
 

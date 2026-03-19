@@ -4,7 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 class TTSProviderError(RuntimeError):
@@ -43,8 +43,17 @@ class TTSProvider(ABC):
     """Interface that all text-to-speech backends must implement."""
 
     @abstractmethod
-    def tts(self, request: TTSRequest) -> Path:
-        """Generate audio for the supplied request and return the output path."""
+    def tts(
+        self,
+        request: TTSRequest,
+        *,
+        chunk_progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Path:
+        """Generate audio for the supplied request and return the output path.
+
+        chunk_progress_callback, if provided, is called after each internal
+        text chunk is synthesised with (chunks_done, chunks_total).
+        """
 
     @abstractmethod
     def get_english_voices(self) -> list[dict[str, str]]:

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import gc
 import logging
 import subprocess
 import tempfile
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Callable, Dict
 
 if TYPE_CHECKING:
     import numpy as np
@@ -14,7 +15,7 @@ from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
 INTERNAL_SPEAKERS = ("Serena", "Vivian", "Aiden", "Ryan")
 BASE_MODEL_ID = "Qwen/Qwen3-TTS"
-DEFAULT_BATCH_SIZE = 4  # chunks processed per GPU call; increase if VRAM allows
+DEFAULT_BATCH_SIZE = 2  # chunks processed per GPU call; increase if VRAM allows
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
 SUPPORTED_FORMATS = {"mp3", "wav"}
 
@@ -229,7 +230,12 @@ class Qwen3TTSProvider(TTSProvider):
                     voices.append({"name": folder.name, "code": folder.name})
         return voices
 
-    def tts(self, request: TTSRequest) -> Path:
+    def tts(
+        self,
+        request: TTSRequest,
+        *,
+        chunk_progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Path:
         import numpy as np  # type: ignore
         import torch  # type: ignore
 
@@ -294,6 +300,11 @@ class Qwen3TTSProvider(TTSProvider):
             sample_rate = sr
             for wav in wavs:
                 all_audio.append(_wav_to_numpy(wav))
+            del wavs
+            gc.collect()
+            torch.cuda.empty_cache()
+            if chunk_progress_callback is not None:
+                chunk_progress_callback(batch_end, len(chunks))
 
         if not all_audio:
             raise TTSProviderError("Qwen3-TTS generated no audio output.")

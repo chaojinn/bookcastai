@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from supertokens_python.recipe.session import SessionContainer
@@ -79,6 +79,45 @@ async def get_epub_result(
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Failed to read EPUB result.") from exc
     return Response(content=content, media_type="application/json")
+
+
+@router.get("/api/epub_result/{pod_title}/chapters")
+async def get_epub_chapters(
+    pod_title: str,
+    request: Request,
+    model_name: str = Query(default=""),
+    session: SessionContainer = Depends(verify_session()),
+) -> list[dict]:
+    user_id = session.get_user_id()
+    book_dir = _get_book_dir(request, user_id, pod_title)
+    json_path = book_dir / "book.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail="EPUB result not found.")
+    try:
+        book_data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Failed to read EPUB result.") from exc
+
+    # Derive provider directory name from model_name (e.g. "kokoro-tts" -> "kokoro")
+    provider_name = (model_name or "").strip().lower().removesuffix("-tts")
+
+    result = []
+    for ch in book_data.get("chapters", []):
+        num = ch.get("chapter_number")
+        title = ch.get("chapter_title", "")
+        has_audio = False
+        if provider_name and num is not None:
+            audio_dir = book_dir / "audio" / provider_name
+            prefix = f"{int(num):03d}_"
+            if audio_dir.is_dir():
+                has_audio = any(
+                    f.name.startswith(prefix) and f.suffix.lower() == ".mp3"
+                    for f in audio_dir.iterdir()
+                )
+        text = ch.get("content_text") or ""
+        word_count = len(text.split()) if text else 0
+        result.append({"number": num, "title": title, "has_audio": has_audio, "word_count": word_count})
+    return result
 
 
 def _run_epub_parse(pod_title: str) -> None:

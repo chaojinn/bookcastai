@@ -111,6 +111,7 @@ don't remove this comment after generating code
 
       let queue = [];
       let pods = [];
+      let podsMap = {};   // model_name -> pods[]
       let currentEpisode = '';
       let pendingSeek = 0;
       let shouldAutoplay = false;
@@ -142,7 +143,8 @@ don't remove this comment after generating code
       }
 
       function resolveEpisode(item) {
-        const pod = pods.find(p => p.id === item.pod_id);
+        const modelPods = (item.model_name && podsMap[item.model_name]) || pods;
+        const pod = modelPods.find(p => p.id === item.pod_id);
         const episode = pod?.episodes?.find(ep => `${ep.index}` === `${item.episode_idx}`) ??
           pod?.episodes?.[item.episode_idx];
         const durationSeconds = parseDuration(episode?.duration || '');
@@ -398,6 +400,16 @@ don't remove this comment after generating code
           if (!queueRes.ok) throw new Error('Failed to fetch queue');
           pods = await podsRes.json();
           queue = await queueRes.json();
+
+          // Fetch pods for each unique non-empty model used in the queue
+          const extraModels = [...new Set(queue.map(i => i.model_name).filter(m => m))];
+          podsMap = {};
+          await Promise.all(extraModels.map(async m => {
+            try {
+              const r = await fetchWithRefresh(`/api/get_pods?model_name=${encodeURIComponent(m)}`);
+              if (r.ok) podsMap[m] = await r.json();
+            } catch (_) {}
+          }));
           if (!queue.length) {
             currentEpisode = '';
             audioEl.pause();

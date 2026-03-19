@@ -104,6 +104,17 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       </div>
       <div id="status-bar" class="status-bar">Ready.</div>
     </section>
+    <section class="panel mt-3 d-none" id="chapters-panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <strong>Chapter Selection</strong>
+        <div class="btn-group btn-group-sm">
+          <button class="btn btn-outline-secondary" id="chapters-all-btn" type="button">All</button>
+          <button class="btn btn-outline-secondary" id="chapters-none-btn" type="button">None</button>
+          <button class="btn btn-outline-secondary" id="chapters-missing-btn" type="button">Missing only</button>
+        </div>
+      </div>
+      <div id="chapters-list" style="max-height:280px;overflow-y:auto"></div>
+    </section>
   </main>
 
   <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
@@ -135,6 +146,63 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       let pageReady = false;
       let jobRunning = false;
       let feedPublishing = false;
+      let chaptersData = [];
+
+      const chaptersPanel = $('#chapters-panel');
+      const chaptersList  = $('#chapters-list');
+
+      function renderChapters() {
+        chaptersList.empty();
+        chaptersData.forEach(ch => {
+          const badge = ch.has_audio
+            ? ' <span class="badge bg-success ms-1" style="font-size:.7em">done</span>'
+            : '';
+          const words = ch.word_count != null
+            ? ` <span class="text-secondary" style="font-size:.85em">(${ch.word_count.toLocaleString()} words)</span>`
+            : '';
+          chaptersList.append(`
+            <div class="form-check">
+              <input class="form-check-input chapter-check" type="checkbox"
+                     id="ch-${ch.number}" value="${ch.number}" checked>
+              <label class="form-check-label" for="ch-${ch.number}">
+                ${ch.number}. ${ch.title}${words}${badge}
+              </label>
+            </div>`);
+        });
+      }
+
+      async function loadChapters(modelName) {
+        if (!podTitle || !pageReady) return;
+        chaptersPanel.addClass('d-none');
+        chaptersList.empty();
+        try {
+          const res = await fetchWithRefresh(
+            `/api/epub_result/${encodeURIComponent(podTitle)}/chapters?model_name=${encodeURIComponent(modelName || '')}`
+          );
+          if (!res.ok) return;
+          chaptersData = await res.json();
+          if (chaptersData.length) {
+            renderChapters();
+            chaptersPanel.removeClass('d-none');
+          }
+        } catch (err) {
+          console.warn('Failed to load chapters', err);
+        }
+      }
+
+      function getSelectedChapterNums() {
+        const all = $('.chapter-check').length;
+        const checked = $('.chapter-check:checked').map((_, el) => Number(el.value)).get();
+        return checked.length === all ? null : checked;
+      }
+
+      $('#chapters-all-btn').on('click', () => $('.chapter-check').prop('checked', true));
+      $('#chapters-none-btn').on('click', () => $('.chapter-check').prop('checked', false));
+      $('#chapters-missing-btn').on('click', () => {
+        chaptersData.forEach(ch => {
+          $(`#ch-${ch.number}`).prop('checked', !ch.has_audio);
+        });
+      });
 
       function setStatus(message, variant) {
         statusBar
@@ -199,6 +267,8 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         temperatureRange.prop('disabled', !pageReady || jobRunning);
         overwriteCheck.prop('disabled', !pageReady || jobRunning);
         quantizeCheck.prop('disabled', !pageReady || jobRunning);
+        $('.chapter-check, #chapters-all-btn, #chapters-none-btn, #chapters-missing-btn')
+          .prop('disabled', !pageReady || jobRunning);
       }
 
       function populateModels() {
@@ -280,6 +350,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
             setStatus('Ready to generate TTS.', 'success');
             updateControlState();
             await loadVoices(modelSelect.val());
+            await loadChapters(modelSelect.val());
             return;
           }
           if (res.status === 404) {
@@ -381,6 +452,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         startProgress();
         try {
           const temperature = Number(temperatureRange.val());
+        const selectedChapters = getSelectedChapterNums();
         const res = await fetchWithRefresh('/api/job', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -393,7 +465,10 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
                 { key: 'speed', value: speed },
                 { key: 'temperature', value: temperature },
                 { key: 'overwrite', value: overwrite },
-                { key: 'quantize', value: quantize }
+                { key: 'quantize', value: quantize },
+                ...(selectedChapters !== null
+                  ? [{ key: 'chapters', value: JSON.stringify(selectedChapters) }]
+                  : [])
               ]
             })
           });
@@ -421,6 +496,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
         const overwrite = overwriteCheck.is(':checked');
         const quantize = quantizeCheck.is(':checked');
         const temperature = Number(temperatureRange.val());
+        const selectedChaptersQ = getSelectedChapterNums();
         try {
           const res = await fetchWithRefresh('/api/job', {
             method: 'POST',
@@ -435,7 +511,10 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
                 { key: 'speed', value: speed },
                 { key: 'temperature', value: temperature },
                 { key: 'overwrite', value: overwrite },
-                { key: 'quantize', value: quantize }
+                { key: 'quantize', value: quantize },
+                ...(selectedChaptersQ !== null
+                  ? [{ key: 'chapters', value: JSON.stringify(selectedChaptersQ) }]
+                  : [])
               ]
             })
           });
@@ -459,6 +538,7 @@ when page loaded, it should call /api/epub_result/{pod_title} to check if json f
       modelSelect.on('change', () => {
         updateParamVisibility();
         loadVoices(modelSelect.val());
+        loadChapters(modelSelect.val());
       });
 
       populateModels();

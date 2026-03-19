@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Callable, Dict
 
 if TYPE_CHECKING:
     import numpy as np
@@ -149,7 +149,12 @@ class KokoroTTSProvider(TTSProvider):
         self.repo_id = repo_id
         self._pipelines: Dict[str, KPipeline] = {}
 
-    def tts(self, request: TTSRequest) -> Path:
+    def tts(
+        self,
+        request: TTSRequest,
+        *,
+        chunk_progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Path:
         _ensure_kokoro()
         np = _ensure_numpy()
 
@@ -185,8 +190,9 @@ class KokoroTTSProvider(TTSProvider):
         if not text_chunks:
             raise TTSProviderError("No text content to synthesise.")
 
+        total_chunks = len(text_chunks)
         wave_chunks = []
-        for text_chunk in text_chunks:
+        for chunk_idx, text_chunk in enumerate(text_chunks):
             try:
                 generator = pipeline(text_chunk, **pipeline_kwargs)
             except Exception as exc:  # pragma: no cover - kokoro raises rich torch errors
@@ -196,6 +202,15 @@ class KokoroTTSProvider(TTSProvider):
                 if audio is None:
                     continue
                 wave_chunks.append(audio.detach().cpu().numpy().astype(np.float32, copy=False))
+            del generator
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+            if chunk_progress_callback is not None:
+                chunk_progress_callback(chunk_idx + 1, total_chunks)
 
         if not wave_chunks:
             raise TTSProviderError("Kokoro generated no audio output for the supplied text.")
