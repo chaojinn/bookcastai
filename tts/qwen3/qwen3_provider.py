@@ -8,14 +8,15 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict
 
+
 if TYPE_CHECKING:
     import numpy as np
 
 from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
 INTERNAL_SPEAKERS = ("Serena", "Vivian", "Aiden", "Ryan")
-BASE_MODEL_ID = "Qwen/Qwen3-TTS"
-DEFAULT_BATCH_SIZE = 2  # chunks processed per GPU call; increase if VRAM allows
+BASE_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+DEFAULT_BATCH_SIZE = 1  # chunks processed per GPU call; increase if VRAM allows
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
 SUPPORTED_FORMATS = {"mp3", "wav"}
 
@@ -110,6 +111,68 @@ def _load_model(path_or_id: str, device: str, *, quantize: bool = False):
     model.model.eval()
     return model
 
+
+
+def _trim_silence(audio: "np.ndarray", sample_rate: int, threshold_db: float = -40.0) -> "np.ndarray":
+    """Trim leading and trailing silence below threshold_db from a waveform."""
+    import numpy as np  # type: ignore
+    threshold = 10 ** (threshold_db / 20.0)
+    nonsilent = np.where(np.abs(audio) > threshold)[0]
+    if len(nonsilent) == 0:
+        return audio
+    return audio[nonsilent[0]:nonsilent[-1] + 1]
+
+
+def _compress_long_silences(
+    audio: "np.ndarray",
+    sample_rate: int,
+    max_silence_sec: float = 1.0,
+    threshold_db: float = -40.0,
+) -> "np.ndarray":
+    """Cap any contiguous silent region longer than max_silence_sec to exactly max_silence_sec.
+
+    Silence is defined as samples whose amplitude is below threshold_db.
+    Non-silent regions and silences within the cap are passed through unchanged.
+    """
+    import numpy as np  # type: ignore
+
+    threshold = 10 ** (threshold_db / 20.0)
+    max_samples = int(sample_rate * max_silence_sec)
+    is_silent = np.abs(audio) <= threshold
+
+    segments: list[np.ndarray] = []
+    i = 0
+    n = len(audio)
+    while i < n:
+        if is_silent[i]:
+            j = i
+            while j < n and is_silent[j]:
+                j += 1
+            silence_len = j - i
+            keep = min(silence_len, max_samples)
+            segments.append(audio[i : i + keep])
+            if silence_len > max_samples:
+                logger.debug(
+                    "Compressed silence: %.2fs → %.2fs",
+                    silence_len / sample_rate,
+                    max_silence_sec,
+                )
+            i = j
+        else:
+            j = i
+            while j < n and not is_silent[j]:
+                j += 1
+            segments.append(audio[i:j])
+            i = j
+
+    return np.concatenate(segments) if segments else audio
+
+
+def _silence_pad(ms: int, sample_rate: int) -> "np.ndarray":
+    """Return an array of silence of the given duration in milliseconds."""
+    import numpy as np  # type: ignore
+    n_samples = int(sample_rate * ms / 1000)
+    return np.zeros(n_samples, dtype=np.float32)
 
 
 def _wav_to_numpy(w) -> "np.ndarray":
@@ -280,9 +343,23 @@ class Qwen3TTSProvider(TTSProvider):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
+        # Warmup: the first inference on a freshly loaded model produces garbage audio
+        # (CUDA JIT compilation, uninitialized internal state). Discard the result.
+        # Use the same batch size as real inference so the correct CUDA kernels are compiled.
+        logger.info("Qwen3 warmup inference (batch_size=%d)...", batch_size)
+        warmup_batch = ["Hello."] * batch_size
+        with torch.inference_mode():
+            model.generate_custom_voice(text=warmup_batch, **gen_kwargs)
+        logger.info("Qwen3 warmup done.")
+
         all_audio: list[np.ndarray] = []
         sample_rate: int | None = None
 
+        debug_dir = request.output_file.parent / "debug" / request.output_file.stem
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Saving debug chunk WAVs to %s", debug_dir)
+
+        chunk_index = 0
         for batch_start in range(0, len(chunks), batch_size):
             batch = chunks[batch_start:batch_start + batch_size]
             batch_end = batch_start + len(batch)
@@ -299,7 +376,15 @@ class Qwen3TTSProvider(TTSProvider):
                 ) from exc
             sample_rate = sr
             for wav in wavs:
-                all_audio.append(_wav_to_numpy(wav))
+                arr = _wav_to_numpy(wav)
+                arr = _trim_silence(arr, sample_rate)
+                arr = _compress_long_silences(arr, sample_rate)
+                chunk_path = debug_dir / f"chunk_{chunk_index:04d}.wav"
+                _write_wav(chunk_path, arr, sample_rate)
+                logger.debug("Saved chunk %d to %s (%.2fs)", chunk_index, chunk_path, len(arr) / sample_rate)
+                all_audio.append(arr)
+                all_audio.append(_silence_pad(200, sample_rate))
+                chunk_index += 1
             del wavs
             gc.collect()
             torch.cuda.empty_cache()
@@ -308,6 +393,10 @@ class Qwen3TTSProvider(TTSProvider):
 
         if not all_audio:
             raise TTSProviderError("Qwen3-TTS generated no audio output.")
+
+        # Drop the trailing 200ms pad appended after the last chunk
+        if len(all_audio) >= 2:
+            all_audio = all_audio[:-1]
 
         combined = np.concatenate(all_audio)
 
