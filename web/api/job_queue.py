@@ -494,7 +494,7 @@ async def _handle_tts(job: Job) -> None:
         _set_progress(job, progress, message or "")
 
     try:
-        from epub_to_pod import convert_epub_to_pod
+        from tts.epub_to_pod import convert_epub_to_pod
     except ImportError as exc:
         job.status = "fail"
         job.finished_at = _utc_now()

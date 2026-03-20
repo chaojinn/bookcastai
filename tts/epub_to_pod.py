@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -122,46 +121,6 @@ def _synthesise_chunk(
     provider.tts(request, chunk_progress_callback=chunk_progress_callback)
 
 
-def _concat_audio_files(chapter_title: str, parts: list[Path], destination: Path) -> None:
-    if not parts:
-        raise RuntimeError(f"No audio chunks to concatenate for chapter '{chapter_title}'.")
-
-    manifest_path = destination.with_suffix(".concat.txt")
-    try:
-        with manifest_path.open("w", encoding="utf-8") as manifest:
-            for part in parts:
-                escaped = part.resolve().as_posix().replace("'", "\\'")
-                manifest.write(f"file '{escaped}'\n")
-
-        command = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(manifest_path),
-            "-c",
-            "copy",
-            str(destination),
-        ]
-        subprocess.run(command, check=True, capture_output=True)
-    except subprocess.CalledProcessError as exc:  # noqa: BLE001
-        stderr = exc.stderr.decode(errors="ignore") if exc.stderr else ""
-        raise RuntimeError(
-            f"Failed to concatenate audio for chapter '{chapter_title}'. "
-            f"ffmpeg exited with {exc.returncode}: {stderr.strip()}"
-        ) from exc
-    finally:
-        if manifest_path.exists():
-            manifest_path.unlink()
-
-    for part in parts:
-        try:
-            part.unlink()
-        except FileNotFoundError:
-            continue
 
 
 def convert_epub_to_pod(
@@ -216,68 +175,38 @@ def convert_epub_to_pod(
         if not text:
             continue
 
-        chunks = chapter.get("chunks") or [text]
-        chunk_texts = [chunk.strip() for chunk in chunks if isinstance(chunk, str) and chunk.strip()]
-        if not chunk_texts:
-            continue
-
-        chunk_files: list[Path] = []
         print(f"Processing chapter {number}: {title}")
-        for chunk_index, chunk_text in enumerate(chunk_texts, start=1):
-            chunk_path = destination.with_name(
-                f"{destination.stem}_part_{chunk_index:03d}{destination.suffix}"
-            )
-            if chunk_path.exists():
-                chunk_path.unlink()
-            print(
-                f"  Chunk {chunk_index}/{len(chunk_texts)}: "
-                f"{chapter['chapter_title'] or f'Chapter {number}'}"
-            )
 
-            def _make_chunk_cb(ch_idx: int, total_ch: int, ck_idx: int, total_ck: int) -> Callable[[int, int], None]:
-                def cb(inner_done: int, inner_total: int) -> None:
-                    if publish_progress is None:
-                        return
-                    chapter_base = (ch_idx - 1) / total_ch
-                    fraction = (
-                        (ck_idx - 1 + inner_done / max(1, inner_total)) / total_ck
-                    ) / total_ch
-                    pct = int((chapter_base + fraction) * 100)
-                    elapsed = time.monotonic() - start_time
-                    if pct > 0:
-                        eta_secs = elapsed / (pct / 100.0) - elapsed
-                        eta_str = _format_eta(eta_secs)
-                    else:
-                        eta_str = "—"
-                    publish_progress(
-                        pct,
-                        f"chapter {ch_idx}/{total_ch}, sub-chunk {inner_done}/{inner_total}"
-                        f" | ETA {eta_str}",
-                    )
-                return cb
-
-            chunk_cb = _make_chunk_cb(chapter_index, total_chapters, chunk_index, len(chunk_texts))
-            try:
-                _synthesise_chunk(provider_info, chunk_text, chunk_path, chunk_progress_callback=chunk_cb)
-            except TTSProviderError as exc:
-                raise RuntimeError(
-                    f"TTS synthesis failed for chapter '{title}' chunk {chunk_index}: {exc}"
-                ) from exc
-            chunk_files.append(chunk_path)
-            if publish_progress is not None:
-                chapter_base = (chapter_index - 1) / total_chapters
-                chunk_fraction = (chunk_index / len(chunk_texts)) / total_chapters
-                progress = int((chapter_base + chunk_fraction) * 100)
-                publish_progress(progress, f"chapter {chapter_index}/{total_chapters}, chunk {chunk_index}/{len(chunk_texts)}")
+        def _make_chunk_cb(ch_idx: int, total_ch: int) -> Callable[[int, int], None]:
+            def cb(inner_done: int, inner_total: int) -> None:
+                if publish_progress is None:
+                    return
+                chapter_base = (ch_idx - 1) / total_ch
+                fraction = (inner_done / max(1, inner_total)) / total_ch
+                pct = int((chapter_base + fraction) * 100)
+                elapsed = time.monotonic() - start_time
+                if pct > 0:
+                    eta_secs = elapsed / (pct / 100.0) - elapsed
+                    eta_str = _format_eta(eta_secs)
+                else:
+                    eta_str = "—"
+                publish_progress(
+                    pct,
+                    f"chapter {ch_idx}/{total_ch}, chunk {inner_done}/{inner_total} | ETA {eta_str}",
+                )
+            return cb
 
         try:
-            _concat_audio_files(title, chunk_files, destination)
-        except RuntimeError as exc:
-            raise RuntimeError(f"Failed to build final audio for chapter '{title}': {exc}") from exc
+            _synthesise_chunk(provider_info, text, destination, chunk_progress_callback=_make_chunk_cb(chapter_index, total_chapters))
+        except TTSProviderError as exc:
+            raise RuntimeError(
+                f"TTS synthesis failed for chapter '{title}': {exc}"
+            ) from exc
 
         print(f"Completed chapter {number}: {destination.name}")
         generated_files.append(destination)
 
+    provider_info["instance"].unload()
     return generated_files
 
 

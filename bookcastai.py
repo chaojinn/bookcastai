@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     epub_agent_cmd = _build_epub_agent_cmd(args)
     epub_to_pod_cmd = [
         sys.executable,
-        str(PROJECT_ROOT / "epub_to_pod.py"),
+        str(PROJECT_ROOT / "tts" / "epub_to_pod.py"),
         args.book_title,
     ]
     feed_cmd = [

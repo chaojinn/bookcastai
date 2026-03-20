@@ -59,3 +59,6 @@ class TTSProvider(ABC):
     def get_english_voices(self) -> list[dict[str, str]]:
         """Return a list of available English voices as dicts with 'name' and 'code' keys."""
 
+    def unload(self) -> None:
+        """Release any loaded models and free associated memory. Override in GPU-backed providers."""
+

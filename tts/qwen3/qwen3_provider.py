@@ -16,7 +16,7 @@ from tts.tts_provider import TTSProvider, TTSProviderError, TTSRequest
 
 INTERNAL_SPEAKERS = ("Serena", "Vivian", "Aiden", "Ryan")
 BASE_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-DEFAULT_BATCH_SIZE = 1  # chunks processed per GPU call; increase if VRAM allows
+DEFAULT_BATCH_SIZE = 8  # chunks processed per GPU call; increase if VRAM allows
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
 SUPPORTED_FORMATS = {"mp3", "wav"}
 
@@ -74,7 +74,7 @@ def _patch_deepcopy_for_dict_keys() -> None:
         copy._deepcopy_dispatch[dict_keys_type] = lambda x, memo: list(x)
 
 
-def _load_model(path_or_id: str, device: str, *, quantize: bool = False):
+def _load_model(path_or_id: str, device: str, *, quantize: bool = False, warmup_speaker: str | None = None, tts_log: "_TtsLog | None" = None):
     Qwen3TTSModel = _ensure_qwen3()
     import torch  # type: ignore
 
@@ -109,6 +109,25 @@ def _load_model(path_or_id: str, device: str, *, quantize: bool = False):
         raise TTSProviderError(f"Failed to load Qwen3-TTS model from '{path_or_id}': {exc}") from exc
     print(f"[Qwen3TTS] Model loaded successfully in {precision}", flush=True)
     model.model.eval()
+
+    # Warmup: discard the first inference to avoid garbage audio caused by
+    # CUDA JIT compilation and uninitialized internal model state.
+    speaker = warmup_speaker or INTERNAL_SPEAKERS[0]
+    print(f"[Qwen3TTS] Running warmup inference (speaker={speaker})...", flush=True)
+    if tts_log is not None:
+        tts_log.warmup_start(speaker)
+    import torch as _torch  # type: ignore
+    import gc as _gc
+    with _torch.inference_mode():
+        model.generate_custom_voice(text=["Hello."], speaker=speaker)
+    _gc.collect()
+    if _torch.cuda.is_available():
+        _torch.cuda.synchronize()
+        _torch.cuda.empty_cache()
+    print("[Qwen3TTS] Warmup done.", flush=True)
+    if tts_log is not None:
+        tts_log.warmup_end()
+
     return model
 
 
@@ -126,13 +145,13 @@ def _trim_silence(audio: "np.ndarray", sample_rate: int, threshold_db: float = -
 def _compress_long_silences(
     audio: "np.ndarray",
     sample_rate: int,
-    max_silence_sec: float = 1.0,
-    threshold_db: float = -40.0,
-) -> "np.ndarray":
+    max_silence_sec: float = 2.0,
+    threshold_db: float = -20.0,
+) -> "tuple[np.ndarray, list[tuple[float, float]]]":
     """Cap any contiguous silent region longer than max_silence_sec to exactly max_silence_sec.
 
-    Silence is defined as samples whose amplitude is below threshold_db.
-    Non-silent regions and silences within the cap are passed through unchanged.
+    Returns the processed audio and a list of (start_sec, end_sec) tuples for each
+    silence region that was compressed.
     """
     import numpy as np  # type: ignore
 
@@ -141,6 +160,7 @@ def _compress_long_silences(
     is_silent = np.abs(audio) <= threshold
 
     segments: list[np.ndarray] = []
+    compressed: list[tuple[float, float]] = []
     i = 0
     n = len(audio)
     while i < n:
@@ -152,11 +172,7 @@ def _compress_long_silences(
             keep = min(silence_len, max_samples)
             segments.append(audio[i : i + keep])
             if silence_len > max_samples:
-                logger.debug(
-                    "Compressed silence: %.2fs → %.2fs",
-                    silence_len / sample_rate,
-                    max_silence_sec,
-                )
+                compressed.append((i / sample_rate, j / sample_rate))
             i = j
         else:
             j = i
@@ -165,7 +181,68 @@ def _compress_long_silences(
             segments.append(audio[i:j])
             i = j
 
-    return np.concatenate(segments) if segments else audio
+    result = np.concatenate(segments) if segments else audio
+    return result, compressed
+
+
+class _TtsLog:
+    """Append-mode log writer for a single TTS task."""
+
+    def __init__(self, log_path: Path) -> None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._f = log_path.open("a", encoding="utf-8")
+        self._write_line("")  # blank separator between runs
+
+    def _write_line(self, msg: str) -> None:
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._f.write(f"[{ts}] {msg}\n")
+        self._f.flush()
+
+    def chapter_start(self, chapter: str) -> None:
+        self._write_line(f"=== Starting chapter: {chapter} ===")
+
+    def chapter_end(self, chapter: str) -> None:
+        self._write_line(f"=== End chapter: {chapter} ===")
+
+    def chunk_start(self, index: int, text: str) -> None:
+        single_line = " ".join(text.split())
+        self._write_line(f"Chunk {index} start: {single_line}")
+
+    def chunk_end(self, index: int) -> None:
+        self._write_line(f"Chunk {index} end")
+
+    def chunk_silence_compressed(self, index: int, start_sec: float, end_sec: float) -> None:
+        self._write_line(
+            f"Chunk {index}: silence at {start_sec:.2f}s-{end_sec:.2f}s compressed to 1.00s"
+        )
+
+    def batch_start(self, batch_start: int, batch_end: int, total: int) -> None:
+        self._write_line(f"Batch [{batch_start + 1}-{batch_end}/{total}] generating...")
+
+    def batch_end(self, batch_start: int, batch_end: int, total: int) -> None:
+        self._write_line(f"Batch [{batch_start + 1}-{batch_end}/{total}] done")
+
+    def concat_start(self, n_chunks: int) -> None:
+        self._write_line(f"Concatenating {n_chunks} chunks...")
+
+    def concat_end(self) -> None:
+        self._write_line("Concatenation done")
+
+    def encode_start(self, fmt: str, path: str) -> None:
+        self._write_line(f"Encoding to {fmt}: {path}")
+
+    def encode_end(self) -> None:
+        self._write_line("Encoding done")
+
+    def warmup_start(self, speaker: str) -> None:
+        self._write_line(f"--- Warmup start (speaker={speaker}) ---")
+
+    def warmup_end(self) -> None:
+        self._write_line("--- Warmup end ---")
+
+    def close(self) -> None:
+        self._f.close()
 
 
 def _silence_pad(ms: int, sample_rate: int) -> "np.ndarray":
@@ -314,7 +391,10 @@ class Qwen3TTSProvider(TTSProvider):
 
         quantize = bool(params.get("quantize", False))
         is_internal = speaker in INTERNAL_SPEAKERS
-        model = self._get_base_model(quantize=quantize) if is_internal else self._get_custom_model(speaker, quantize=quantize)
+
+        tts_log = _TtsLog(request.output_file.parent / "debug" / "tts.log")
+
+        model = self._get_base_model(quantize=quantize, tts_log=tts_log) if is_internal else self._get_custom_model(speaker, quantize=quantize, tts_log=tts_log)
 
         from agent.chunkrizer import chunk_text  # lazy import to avoid module-level side effects
         chunks = chunk_text(request.text_content, 500)
@@ -327,7 +407,7 @@ class Qwen3TTSProvider(TTSProvider):
         except (TypeError, ValueError):
             batch_size = DEFAULT_BATCH_SIZE * 2 if quantize else DEFAULT_BATCH_SIZE
 
-        gen_kwargs: dict = {"speaker": speaker}
+        gen_kwargs: dict = {"speaker": speaker, "max_new_tokens": 1440}  # 1440 tokens @ 12Hz = 120s max per chunk
         if temperature_val is not None:
             try:
                 gen_kwargs["temperature"] = float(temperature_val)
@@ -343,15 +423,6 @@ class Qwen3TTSProvider(TTSProvider):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-        # Warmup: the first inference on a freshly loaded model produces garbage audio
-        # (CUDA JIT compilation, uninitialized internal state). Discard the result.
-        # Use the same batch size as real inference so the correct CUDA kernels are compiled.
-        logger.info("Qwen3 warmup inference (batch_size=%d)...", batch_size)
-        warmup_batch = ["Hello."] * batch_size
-        with torch.inference_mode():
-            model.generate_custom_voice(text=warmup_batch, **gen_kwargs)
-        logger.info("Qwen3 warmup done.")
-
         all_audio: list[np.ndarray] = []
         sample_rate: int | None = None
 
@@ -359,29 +430,41 @@ class Qwen3TTSProvider(TTSProvider):
         debug_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Saving debug chunk WAVs to %s", debug_dir)
 
+        tts_log.chapter_start(request.output_file.stem)
+
         chunk_index = 0
         for batch_start in range(0, len(chunks), batch_size):
             batch = chunks[batch_start:batch_start + batch_size]
             batch_end = batch_start + len(batch)
-            logger.debug(
-                "Qwen3 batch [%d-%d/%d]: first=%r",
-                batch_start + 1, batch_end, len(chunks), batch[0][:70],
-            )
+            tts_log.batch_start(batch_start, batch_end, len(chunks))
             try:
                 with torch.inference_mode():
                     wavs, sr = model.generate_custom_voice(text=batch, **gen_kwargs)
+                # Move all outputs to CPU immediately so GPU memory is freed
+                # before the next batch's generation begins.
+                if hasattr(wavs, "cpu"):
+                    wavs = wavs.cpu()
+                elif isinstance(wavs, (list, tuple)):
+                    wavs = [w.cpu() if hasattr(w, "cpu") else w for w in wavs]
             except Exception as exc:
+                tts_log.close()
                 raise TTSProviderError(
                     f"Qwen3-TTS synthesis failed on chunks {batch_start + 1}-{batch_end}: {exc}"
                 ) from exc
             sample_rate = sr
-            for wav in wavs:
+            tts_log.batch_end(batch_start, batch_end, len(chunks))
+            torch.cuda.empty_cache()
+            for wav, chunk_text in zip(wavs, batch):
+                tts_log.chunk_start(chunk_index, chunk_text)
                 arr = _wav_to_numpy(wav)
                 arr = _trim_silence(arr, sample_rate)
-                arr = _compress_long_silences(arr, sample_rate)
+                arr, compressed = _compress_long_silences(arr, sample_rate)
+                for start_sec, end_sec in compressed:
+                    tts_log.chunk_silence_compressed(chunk_index, start_sec, end_sec)
                 chunk_path = debug_dir / f"chunk_{chunk_index:04d}.wav"
                 _write_wav(chunk_path, arr, sample_rate)
                 logger.debug("Saved chunk %d to %s (%.2fs)", chunk_index, chunk_path, len(arr) / sample_rate)
+                tts_log.chunk_end(chunk_index)
                 all_audio.append(arr)
                 all_audio.append(_silence_pad(200, sample_rate))
                 chunk_index += 1
@@ -392,30 +475,67 @@ class Qwen3TTSProvider(TTSProvider):
                 chunk_progress_callback(batch_end, len(chunks))
 
         if not all_audio:
+            tts_log.close()
             raise TTSProviderError("Qwen3-TTS generated no audio output.")
 
         # Drop the trailing 200ms pad appended after the last chunk
         if len(all_audio) >= 2:
             all_audio = all_audio[:-1]
 
+        tts_log.concat_start(chunk_index)
         combined = np.concatenate(all_audio)
+        del all_audio
+        tts_log.concat_end()
 
+        tts_log.encode_start(fmt, str(request.output_file))
         if fmt == "mp3":
             _write_mp3(request.output_file, combined, sample_rate)
         else:
             _write_wav(request.output_file, combined, sample_rate)
+        tts_log.encode_end()
+
+        tts_log.chapter_end(request.output_file.stem)
+        tts_log.close()
+
+        del combined
+        del model  # drop local ref so unload() can fully free it
+        gc.collect()
+        torch.cuda.empty_cache()
 
         return request.output_file
 
-    def _get_base_model(self, *, quantize: bool = False):
-        key = ("base", quantize)
+    def _get_base_model(self, *, quantize: bool = False, tts_log: "_TtsLog | None" = None):
         if self._base_model is None or getattr(self, "_base_model_quantize", None) != quantize:
             logger.info("Loading Qwen3-TTS base model from %s (quantize=%s)", self.base_model_id, quantize)
-            self._base_model = _load_model(self.base_model_id, self.device, quantize=quantize)
+            self._base_model = _load_model(self.base_model_id, self.device, quantize=quantize, tts_log=tts_log)
             self._base_model_quantize = quantize
         return self._base_model
 
-    def _get_custom_model(self, speaker: str, *, quantize: bool = False):
+    def unload(self) -> None:
+        """Delete all loaded models and release VRAM."""
+        import gc
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            before_alloc = torch.cuda.memory_allocated() // (1024 * 1024)
+            before_reserved = torch.cuda.memory_reserved() // (1024 * 1024)
+            logger.info("Before unload — allocated: %d MiB, reserved: %d MiB", before_alloc, before_reserved)
+
+        self._base_model = None
+        self._custom_models.clear()
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            after_alloc = torch.cuda.memory_allocated() // (1024 * 1024)
+            after_reserved = torch.cuda.memory_reserved() // (1024 * 1024)
+            logger.info("After unload  — allocated: %d MiB, reserved: %d MiB", after_alloc, after_reserved)
+
+        logger.info("Qwen3TTSProvider unloaded.")
+
+    def _get_custom_model(self, speaker: str, *, quantize: bool = False, tts_log: "_TtsLog | None" = None):
         cache_key = (speaker, quantize)
         if cache_key not in self._custom_models:
             speaker_path = SPEAKERS_DIR / speaker
@@ -426,5 +546,5 @@ class Qwen3TTSProvider(TTSProvider):
                     f"Available: {available or 'none'}."
                 )
             logger.info("Loading Qwen3-TTS custom model for speaker '%s' (quantize=%s)", speaker, quantize)
-            self._custom_models[cache_key] = _load_model(str(speaker_path), self.device, quantize=quantize)
+            self._custom_models[cache_key] = _load_model(str(speaker_path), self.device, quantize=quantize, warmup_speaker=speaker, tts_log=tts_log)
         return self._custom_models[cache_key]
