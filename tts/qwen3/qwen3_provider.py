@@ -19,6 +19,7 @@ BASE_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 DEFAULT_BATCH_SIZE = 8  # chunks processed per GPU call; increase if VRAM allows
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
 SUPPORTED_FORMATS = {"mp3", "wav"}
+CHUNK_SILENCE_PAD_MS = 1000  # silence inserted between consecutive TTS chunks
 
 logger = logging.getLogger(__name__)
 
@@ -458,7 +459,8 @@ class Qwen3TTSProvider(TTSProvider):
                 tts_log.chunk_start(chunk_index, chunk_text)
                 arr = _wav_to_numpy(wav)
                 arr = _trim_silence(arr, sample_rate)
-                arr, compressed = _compress_long_silences(arr, sample_rate)
+                #arr, compressed = _compress_long_silences(arr, sample_rate)
+                compressed = []
                 for start_sec, end_sec in compressed:
                     tts_log.chunk_silence_compressed(chunk_index, start_sec, end_sec)
                 chunk_path = debug_dir / f"chunk_{chunk_index:04d}.wav"
@@ -466,7 +468,7 @@ class Qwen3TTSProvider(TTSProvider):
                 logger.debug("Saved chunk %d to %s (%.2fs)", chunk_index, chunk_path, len(arr) / sample_rate)
                 tts_log.chunk_end(chunk_index)
                 all_audio.append(arr)
-                all_audio.append(_silence_pad(200, sample_rate))
+                all_audio.append(_silence_pad(CHUNK_SILENCE_PAD_MS, sample_rate))
                 chunk_index += 1
             del wavs
             gc.collect()
