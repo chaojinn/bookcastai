@@ -8,7 +8,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict
 
-
 if TYPE_CHECKING:
     import numpy as np
 
@@ -20,12 +19,16 @@ DEFAULT_BATCH_SIZE = 8  # chunks processed per GPU call; increase if VRAM allows
 SPEAKERS_DIR = Path(__file__).parent / "speakers"
 SUPPORTED_FORMATS = {"mp3", "wav"}
 CHUNK_SILENCE_PAD_MS = 1000  # silence inserted between consecutive TTS chunks
+VAD_SILENCE_THRESHOLD = 0.10  # regenerate chunk if silence fraction exceeds this
+VAD_MAX_RETRIES = 5           # max regeneration attempts per chunk before using best result
 
 logger = logging.getLogger(__name__)
 
 _QWEN3_MODEL_CLS = None
 _SF = None
 _AUDIO_SEGMENT = None
+_VAD_PIPELINE = None
+_TORCHAUDIO_PATCHED = False
 
 
 def _ensure_qwen3():
@@ -61,18 +64,120 @@ def _ensure_pydub():
 
 
 def _patch_deepcopy_for_dict_keys() -> None:
-    """Register a deepcopy handler for dict_keys so bitsandbytes quantization works.
-
-    transformers calls deepcopy(model) inside get_keys_to_not_convert() when
-    preparing 8-bit quantization.  If the model state contains dict_keys values
-    (e.g. tied-weights mappings) the default deepcopy raises
-    ``TypeError: cannot pickle 'dict_keys' object``.
-    Converting dict_keys → list is always correct for a deepcopy.
-    """
+    """Register a deepcopy handler for dict_keys so bitsandbytes quantization works."""
     import copy
     dict_keys_type = type({}.keys())
     if dict_keys_type not in copy._deepcopy_dispatch:
         copy._deepcopy_dispatch[dict_keys_type] = lambda x, memo: list(x)
+
+
+def _patch_torchaudio_for_pyannote() -> None:
+    """Apply one-time compat patches so pyannote.audio works with torchaudio 2.10+."""
+    global _TORCHAUDIO_PATCHED
+    if _TORCHAUDIO_PATCHED:
+        return
+
+    import torchaudio  # type: ignore
+    import torch  # type: ignore
+    import numpy as np  # type: ignore
+    import librosa  # type: ignore
+    import soundfile as sf  # type: ignore
+    from collections import namedtuple
+
+    if not hasattr(torchaudio, "AudioMetaData"):
+        torchaudio.AudioMetaData = namedtuple(
+            "AudioMetaData",
+            ["sample_rate", "num_frames", "num_channels", "bits_per_sample", "encoding"],
+        )
+
+    if not hasattr(torchaudio, "list_audio_backends"):
+        torchaudio.list_audio_backends = lambda: ["soundfile"]
+
+    if not hasattr(torchaudio, "info"):
+        def _info(path, backend=None):
+            info = sf.info(str(path))
+            return torchaudio.AudioMetaData(
+                sample_rate=info.samplerate,
+                num_frames=info.frames,
+                num_channels=info.channels,
+                bits_per_sample=16,
+                encoding="PCM_S",
+            )
+        torchaudio.info = _info
+
+    def _load_compat(uri, frame_offset=0, num_frames=-1, normalize=True,
+                     channels_first=True, format=None, buffer_size=4096, backend=None):
+        waveform, sr = librosa.load(str(uri), sr=None, mono=False)
+        if waveform.ndim == 1:
+            waveform = waveform[np.newaxis, :]
+        tensor = torch.from_numpy(waveform.copy())
+        if frame_offset > 0:
+            tensor = tensor[:, frame_offset:]
+        if num_frames > 0:
+            tensor = tensor[:, :num_frames]
+        return tensor, sr
+    torchaudio.load = _load_compat
+
+    _orig_torch_load = torch.load
+    def _torch_load_compat(*args, **kwargs):
+        if kwargs.get("weights_only") is not False:
+            kwargs["weights_only"] = False
+        return _orig_torch_load(*args, **kwargs)
+    torch.load = _torch_load_compat
+
+    _TORCHAUDIO_PATCHED = True
+
+
+def _load_vad_pipeline():
+    """Load and cache the pyannote VAD pipeline (singleton, runs on CPU)."""
+    global _VAD_PIPELINE
+    if _VAD_PIPELINE is not None:
+        return _VAD_PIPELINE
+
+    import os
+    import torch  # type: ignore
+    from dotenv import load_dotenv  # type: ignore
+
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    load_dotenv(env_path)
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise TTSProviderError("HF_TOKEN not found in .env — required for VAD pipeline")
+
+    _patch_torchaudio_for_pyannote()
+
+    from pyannote.audio import Pipeline  # type: ignore
+
+    pipeline = Pipeline.from_pretrained(
+        "pyannote/voice-activity-detection",
+        use_auth_token=hf_token,
+    )
+    if pipeline is None:
+        raise TTSProviderError(
+            "Failed to load pyannote VAD pipeline. "
+            "Check HF_TOKEN and accept terms at https://hf.co/pyannote/voice-activity-detection"
+        )
+
+    # Run VAD on CPU to avoid VRAM conflicts with the TTS model on GPU.
+    pipeline.to(torch.device("cpu"))
+    _VAD_PIPELINE = pipeline
+    return _VAD_PIPELINE
+
+
+def _vad_silence_pct(wav_path: Path, pipeline) -> float:
+    """Return the fraction [0, 1] of silence/noise in a wav file using pyannote VAD."""
+    import soundfile as sf  # type: ignore
+
+    output = pipeline(str(wav_path))
+    speech_segments = [
+        (seg.start, seg.end) for seg, _, _ in output.itertracks(yield_label=True)
+    ]
+    info = sf.info(str(wav_path))
+    total_duration = info.frames / info.samplerate
+    if total_duration <= 0:
+        return 0.0
+    total_speech = sum(e - s for s, e in speech_segments)
+    return 1.0 - (total_speech / total_duration)
 
 
 def _load_model(path_or_id: str, device: str, *, quantize: bool = False, warmup_speaker: str | None = None, tts_log: "_TtsLog | None" = None):
@@ -111,8 +216,6 @@ def _load_model(path_or_id: str, device: str, *, quantize: bool = False, warmup_
     print(f"[Qwen3TTS] Model loaded successfully in {precision}", flush=True)
     model.model.eval()
 
-    # Warmup: discard the first inference to avoid garbage audio caused by
-    # CUDA JIT compilation and uninitialized internal model state.
     speaker = warmup_speaker or INTERNAL_SPEAKERS[0]
     print(f"[Qwen3TTS] Running warmup inference (speaker={speaker})...", flush=True)
     if tts_log is not None:
@@ -132,7 +235,6 @@ def _load_model(path_or_id: str, device: str, *, quantize: bool = False, warmup_
     return model
 
 
-
 def _trim_silence(audio: "np.ndarray", sample_rate: int, threshold_db: float = -40.0) -> "np.ndarray":
     """Trim leading and trailing silence below threshold_db from a waveform."""
     import numpy as np  # type: ignore
@@ -141,49 +243,6 @@ def _trim_silence(audio: "np.ndarray", sample_rate: int, threshold_db: float = -
     if len(nonsilent) == 0:
         return audio
     return audio[nonsilent[0]:nonsilent[-1] + 1]
-
-
-def _compress_long_silences(
-    audio: "np.ndarray",
-    sample_rate: int,
-    max_silence_sec: float = 2.0,
-    threshold_db: float = -20.0,
-) -> "tuple[np.ndarray, list[tuple[float, float]]]":
-    """Cap any contiguous silent region longer than max_silence_sec to exactly max_silence_sec.
-
-    Returns the processed audio and a list of (start_sec, end_sec) tuples for each
-    silence region that was compressed.
-    """
-    import numpy as np  # type: ignore
-
-    threshold = 10 ** (threshold_db / 20.0)
-    max_samples = int(sample_rate * max_silence_sec)
-    is_silent = np.abs(audio) <= threshold
-
-    segments: list[np.ndarray] = []
-    compressed: list[tuple[float, float]] = []
-    i = 0
-    n = len(audio)
-    while i < n:
-        if is_silent[i]:
-            j = i
-            while j < n and is_silent[j]:
-                j += 1
-            silence_len = j - i
-            keep = min(silence_len, max_samples)
-            segments.append(audio[i : i + keep])
-            if silence_len > max_samples:
-                compressed.append((i / sample_rate, j / sample_rate))
-            i = j
-        else:
-            j = i
-            while j < n and not is_silent[j]:
-                j += 1
-            segments.append(audio[i:j])
-            i = j
-
-    result = np.concatenate(segments) if segments else audio
-    return result, compressed
 
 
 class _TtsLog:
@@ -206,23 +265,39 @@ class _TtsLog:
     def chapter_end(self, chapter: str) -> None:
         self._write_line(f"=== End chapter: {chapter} ===")
 
-    def chunk_start(self, index: int, text: str) -> None:
+    def chunk_start(self, index: int, text: str, attempt: int = 1) -> None:
         single_line = " ".join(text.split())
-        self._write_line(f"Chunk {index} start: {single_line}")
+        self._write_line(f"Chunk {index} attempt {attempt} start: {single_line}")
 
     def chunk_end(self, index: int) -> None:
         self._write_line(f"Chunk {index} end")
 
-    def chunk_silence_compressed(self, index: int, start_sec: float, end_sec: float) -> None:
+    def chunk_vad_check(self, index: int, attempt: int, copy_idx: int, silence_pct: float) -> None:
         self._write_line(
-            f"Chunk {index}: silence at {start_sec:.2f}s-{end_sec:.2f}s compressed to 1.00s"
+            f"Chunk {index} attempt {attempt} copy {copy_idx} VAD: silence={silence_pct*100:.1f}%"
         )
 
-    def batch_start(self, batch_start: int, batch_end: int, total: int) -> None:
-        self._write_line(f"Batch [{batch_start + 1}-{batch_end}/{total}] generating...")
+    def chunk_vad_requeue(self, index: int, attempt: int, silence_pct: float) -> None:
+        self._write_line(
+            f"Chunk {index} attempt {attempt} VAD: silence={silence_pct*100:.1f}% > "
+            f"{VAD_SILENCE_THRESHOLD*100:.0f}% threshold — requeued (attempt {attempt+1}/{VAD_MAX_RETRIES})"
+        )
 
-    def batch_end(self, batch_start: int, batch_end: int, total: int) -> None:
-        self._write_line(f"Batch [{batch_start + 1}-{batch_end}/{total}] done")
+    def chunk_vad_gave_up(self, index: int, best_silence_pct: float) -> None:
+        self._write_line(
+            f"Chunk {index} VAD: exhausted {VAD_MAX_RETRIES} retries, "
+            f"using best result (silence={best_silence_pct*100:.1f}%)"
+        )
+
+    def batch_start(self, batch_num: int, n_jobs: int, n_wavs: int, queue_remaining: int, total: int) -> None:
+        copies = f", {n_wavs // n_jobs}x copies to fill batch" if n_wavs > n_jobs else ""
+        self._write_line(
+            f"Batch {batch_num}: generating {n_jobs} chunks as {n_wavs} wavs{copies} "
+            f"({queue_remaining} remaining in queue, {total} total)"
+        )
+
+    def batch_end(self, batch_num: int, accepted: int, total: int) -> None:
+        self._write_line(f"Batch {batch_num} done: {accepted}/{total} chunks accepted so far")
 
     def concat_start(self, n_chunks: int) -> None:
         self._write_line(f"Concatenating {n_chunks} chunks...")
@@ -408,7 +483,7 @@ class Qwen3TTSProvider(TTSProvider):
         except (TypeError, ValueError):
             batch_size = DEFAULT_BATCH_SIZE * 2 if quantize else DEFAULT_BATCH_SIZE
 
-        gen_kwargs: dict = {"speaker": speaker, "max_new_tokens": 1440}  # 1440 tokens @ 12Hz = 120s max per chunk
+        gen_kwargs: dict = {"speaker": speaker, "max_new_tokens": 1440}
         if temperature_val is not None:
             try:
                 gen_kwargs["temperature"] = float(temperature_val)
@@ -424,8 +499,7 @@ class Qwen3TTSProvider(TTSProvider):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-        all_audio: list[np.ndarray] = []
-        sample_rate: int | None = None
+        vad_pipeline = _load_vad_pipeline()
 
         debug_dir = request.output_file.parent / "debug" / request.output_file.stem
         debug_dir.mkdir(parents=True, exist_ok=True)
@@ -433,16 +507,38 @@ class Qwen3TTSProvider(TTSProvider):
 
         tts_log.chapter_start(request.output_file.stem)
 
-        chunk_index = 0
-        for batch_start in range(0, len(chunks), batch_size):
-            batch = chunks[batch_start:batch_start + batch_size]
-            batch_end = batch_start + len(batch)
-            tts_log.batch_start(batch_start, batch_end, len(chunks))
+        # Queue entries: dict with keys text, chunk_idx, attempt, best_arr, best_pct
+        queue: list[dict] = [
+            {"text": c, "chunk_idx": i, "attempt": 1, "best_arr": None, "best_pct": 1.0}
+            for i, c in enumerate(chunks)
+        ]
+        results: dict[int, np.ndarray] = {}
+        sample_rate: int | None = None
+        batch_num = 0
+
+        while queue:
+            batch_jobs = queue[:batch_size]
+            queue = queue[batch_size:]
+            batch_num += 1
+            n_jobs = len(batch_jobs)
+
+            # When fewer jobs than batch_size, distribute spare capacity evenly so
+            # the GPU batch is fully utilised and each chunk gets multiple candidates.
+            if n_jobs < batch_size:
+                base = batch_size // n_jobs
+                extra = batch_size % n_jobs
+                copies_per_job = [base + (1 if i < extra else 0) for i in range(n_jobs)]
+            else:
+                copies_per_job = [1] * n_jobs
+
+            expanded_texts = []
+            for job, n_copies in zip(batch_jobs, copies_per_job):
+                expanded_texts.extend([job["text"]] * n_copies)
+
+            tts_log.batch_start(batch_num, n_jobs, len(expanded_texts), len(queue), len(chunks))
             try:
                 with torch.inference_mode():
-                    wavs, sr = model.generate_custom_voice(text=batch, **gen_kwargs)
-                # Move all outputs to CPU immediately so GPU memory is freed
-                # before the next batch's generation begins.
+                    wavs, sr = model.generate_custom_voice(text=expanded_texts, **gen_kwargs)
                 if hasattr(wavs, "cpu"):
                     wavs = wavs.cpu()
                 elif isinstance(wavs, (list, tuple)):
@@ -450,43 +546,87 @@ class Qwen3TTSProvider(TTSProvider):
             except Exception as exc:
                 tts_log.close()
                 raise TTSProviderError(
-                    f"Qwen3-TTS synthesis failed on chunks {batch_start + 1}-{batch_end}: {exc}"
+                    f"Qwen3-TTS synthesis failed on batch {batch_num}: {exc}"
                 ) from exc
+
             sample_rate = sr
-            tts_log.batch_end(batch_start, batch_end, len(chunks))
             torch.cuda.empty_cache()
-            for wav, chunk_text in zip(wavs, batch):
-                tts_log.chunk_start(chunk_index, chunk_text)
-                arr = _wav_to_numpy(wav)
-                arr = _trim_silence(arr, sample_rate)
-                #arr, compressed = _compress_long_silences(arr, sample_rate)
-                compressed = []
-                for start_sec, end_sec in compressed:
-                    tts_log.chunk_silence_compressed(chunk_index, start_sec, end_sec)
-                chunk_path = debug_dir / f"chunk_{chunk_index:04d}.wav"
-                _write_wav(chunk_path, arr, sample_rate)
-                logger.debug("Saved chunk %d to %s (%.2fs)", chunk_index, chunk_path, len(arr) / sample_rate)
-                tts_log.chunk_end(chunk_index)
-                all_audio.append(arr)
-                all_audio.append(_silence_pad(CHUNK_SILENCE_PAD_MS, sample_rate))
-                chunk_index += 1
+
+            wav_offset = 0
+            for job, n_copies in zip(batch_jobs, copies_per_job):
+                chunk_idx = job["chunk_idx"]
+                attempt = job["attempt"]
+                job_wavs = wavs[wav_offset:wav_offset + n_copies]
+                wav_offset += n_copies
+
+                tts_log.chunk_start(chunk_idx, job["text"], attempt)
+
+                best_this_arr, best_this_pct = None, 1.0
+                accepted_arr = None
+
+                for copy_idx, wav in enumerate(job_wavs):
+                    arr = _wav_to_numpy(wav)
+                    arr = _trim_silence(arr, sample_rate)
+
+                    # Write temp, VAD check, rename to embed actual pct
+                    tmp_path = debug_dir / f"chunk_{chunk_idx:04d}_{attempt}_{copy_idx}_tmp.wav"
+                    _write_wav(tmp_path, arr, sample_rate)
+                    silence_pct = _vad_silence_pct(tmp_path, vad_pipeline)
+                    pct_int = round(silence_pct * 100)
+                    tmp_path.rename(debug_dir / f"chunk_{chunk_idx:04d}_{attempt}_{copy_idx}_{pct_int}.wav")
+
+                    tts_log.chunk_vad_check(chunk_idx, attempt, copy_idx, silence_pct)
+
+                    if silence_pct < best_this_pct:
+                        best_this_arr = arr
+                        best_this_pct = silence_pct
+
+                    if silence_pct <= VAD_SILENCE_THRESHOLD:
+                        accepted_arr = arr
+                        break  # good enough — skip remaining copies
+
+                # Promote best from this attempt to overall best if improved
+                if best_this_pct < job["best_pct"]:
+                    job["best_arr"] = best_this_arr
+                    job["best_pct"] = best_this_pct
+
+                if accepted_arr is not None:
+                    results[chunk_idx] = accepted_arr
+                    logger.debug(
+                        "Chunk %d attempt %d accepted (silence=%.1f%%)",
+                        chunk_idx, attempt, best_this_pct * 100,
+                    )
+                elif attempt >= VAD_MAX_RETRIES:
+                    tts_log.chunk_vad_gave_up(chunk_idx, job["best_pct"])
+                    results[chunk_idx] = job["best_arr"]
+                else:
+                    tts_log.chunk_vad_requeue(chunk_idx, attempt, job["best_pct"])
+                    job["attempt"] += 1
+                    queue.append(job)
+
+                tts_log.chunk_end(chunk_idx)
+
             del wavs
             gc.collect()
             torch.cuda.empty_cache()
-            if chunk_progress_callback is not None:
-                chunk_progress_callback(batch_end, len(chunks))
+            tts_log.batch_end(batch_num, len(results), len(chunks))
 
-        if not all_audio:
+            if chunk_progress_callback is not None:
+                chunk_progress_callback(len(results), len(chunks))
+
+        if not results:
             tts_log.close()
             raise TTSProviderError("Qwen3-TTS generated no audio output.")
 
-        # Drop the trailing 200ms pad appended after the last chunk
-        if len(all_audio) >= 2:
-            all_audio = all_audio[:-1]
-
-        tts_log.concat_start(chunk_index)
+        # Assemble in original chunk order with silence pads between
+        tts_log.concat_start(len(chunks))
+        all_audio: list[np.ndarray] = []
+        for i in range(len(chunks)):
+            all_audio.append(results[i])
+            if i < len(chunks) - 1:
+                all_audio.append(_silence_pad(CHUNK_SILENCE_PAD_MS, sample_rate))
         combined = np.concatenate(all_audio)
-        del all_audio
+        del all_audio, results
         tts_log.concat_end()
 
         tts_log.encode_start(fmt, str(request.output_file))
